@@ -12,5 +12,10 @@ const pool = new Pool({
   },
 });
 
+// Test connection on startup
+pool.connect()
+  .then(() => console.log("✅ Connected to PostgreSQL"))
+  .catch(err => console.error("❌ PostgreSQL connection error:", err));
+
 // Export the pool so you can use it elsewhere in your project
 module.exports = pool;
