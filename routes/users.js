@@ -69,6 +69,11 @@ router.post('/register', async (req, res) => {
     const defaultLongitude = 77.5946; // Bangalore, India
     const defaultHeading = 90;        // East direction (90 degrees)
     
+    // Ensure location values are numbers
+    const latValue = parseFloat(latitude) || defaultLatitude;
+    const lngValue = parseFloat(longitude) || defaultLongitude;
+    const headingValue = parseFloat(heading) || defaultHeading;
+    
     const insertValues = [
       username,
       hashedPassword,
@@ -79,9 +84,9 @@ router.post('/register', async (req, res) => {
       category,
       phone_no,
       id_no,
-      latitude || defaultLatitude, // Use provided latitude or default to Bangalore
-      longitude || defaultLongitude, // Use provided longitude or default to Bangalore
-      heading || defaultHeading  // Use provided heading or default to East (90°)
+      latValue,  // Ensure it's a number
+      lngValue,  // Ensure it's a number
+      headingValue  // Ensure it's a number
     ];
     
     console.log('[REGISTER] Inserting values:', {
