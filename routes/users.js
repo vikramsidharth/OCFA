@@ -94,6 +94,8 @@ router.post('/register', async (req, res) => {
       usingDefaults: !(latitude && longitude && heading)
     });
     
+    console.log('[REGISTER] About to execute INSERT query with values:', insertValues);
+    
     const result = await pool.query(
       `INSERT INTO users (
         username, password, name, role, email, unit, category, "MobileNumber", "EmployeeID", latitude, longitude, heading
@@ -107,8 +109,10 @@ router.post('/register', async (req, res) => {
       username: result.rows[0].username,
       role: result.rows[0].role,
       latitude: result.rows[0].latitude,
-      longitude: result.rows[0].longitude
+      longitude: result.rows[0].longitude,
+      heading: result.rows[0].heading
     });
+    console.log('[REGISTER] Full returned row:', JSON.stringify(result.rows[0], null, 2));
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('[REGISTER] Backend error:', err);
