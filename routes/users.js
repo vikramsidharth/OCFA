@@ -36,35 +36,71 @@ router.post('/register', async (req, res) => {
     unit_name,
     category,
     phone_no,
-    id_no
+    id_no,
+    latitude,
+    longitude
   } = req.body;
   if (!username || !password || !role || !name) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
+  
+  // Log registration attempt with location data
+  console.log('[REGISTER] Registration attempt:', {
+    username,
+    name,
+    role,
+    email,
+    unit_name,
+    hasLocation: !!(latitude && longitude),
+    latitude: latitude || 'not provided',
+    longitude: longitude || 'not provided'
+  });
+  
+  // Log the entire request body for debugging
+  console.log('[REGISTER] Full request body:', JSON.stringify(req.body, null, 2));
+  
   try {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const insertValues = [
+      username,
+      hashedPassword,
+      name,
+      role,
+      email,
+      unit_name,
+      category,
+      phone_no,
+      id_no,
+      latitude || 0, // Use provided latitude or default to 0
+      longitude || 0, // Use provided longitude or default to 0
+      0  // heading default
+    ];
+    
+    console.log('[REGISTER] Inserting values:', {
+      username,
+      name,
+      role,
+      latitude: insertValues[9],
+      longitude: insertValues[10],
+      heading: insertValues[11]
+    });
+    
     const result = await pool.query(
       `INSERT INTO users (
         username, password, name, role, email, unit, category, "MobileNumber", "EmployeeID", latitude, longitude, heading
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
       ) RETURNING id, username, name, role, email, unit, category, "MobileNumber", "EmployeeID", latitude, longitude, heading`,
-      [
-        username,
-        hashedPassword,
-        name,
-        role,
-        email,
-        unit_name,
-        category,
-        phone_no,
-        id_no,
-        0, // latitude default
-        0, // longitude default
-        0  // heading default
-      ]
+      insertValues
     );
+    console.log('[REGISTER] User created successfully:', {
+      id: result.rows[0].id,
+      username: result.rows[0].username,
+      role: result.rows[0].role,
+      latitude: result.rows[0].latitude,
+      longitude: result.rows[0].longitude
+    });
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('[REGISTER] Backend error:', err);
