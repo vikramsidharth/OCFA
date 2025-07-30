@@ -38,7 +38,8 @@ router.post('/register', async (req, res) => {
     phone_no,
     id_no,
     latitude,
-    longitude
+    longitude,
+    heading
   } = req.body;
   if (!username || !password || !role || !name) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -53,7 +54,8 @@ router.post('/register', async (req, res) => {
     unit_name,
     hasLocation: !!(latitude && longitude),
     latitude: latitude || 'not provided',
-    longitude: longitude || 'not provided'
+    longitude: longitude || 'not provided',
+    heading: heading || 'not provided'
   });
   
   // Log the entire request body for debugging
@@ -74,7 +76,7 @@ router.post('/register', async (req, res) => {
       id_no,
       latitude || 0, // Use provided latitude or default to 0
       longitude || 0, // Use provided longitude or default to 0
-      0  // heading default
+      heading || 0  // Use provided heading or default to 0
     ];
     
     console.log('[REGISTER] Inserting values:', {
