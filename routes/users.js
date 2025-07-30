@@ -36,88 +36,35 @@ router.post('/register', async (req, res) => {
     unit_name,
     category,
     phone_no,
-    id_no,
-    latitude,
-    longitude,
-    heading
+    id_no
   } = req.body;
   if (!username || !password || !role || !name) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
-  
-  // Log registration attempt with location data
-  console.log('[REGISTER] Registration attempt:', {
-    username,
-    name,
-    role,
-    email,
-    unit_name,
-    hasLocation: !!(latitude && longitude),
-    latitude: latitude || 'not provided',
-    longitude: longitude || 'not provided',
-    heading: heading || 'not provided'
-  });
-  
-  // Log the entire request body for debugging
-  console.log('[REGISTER] Full request body:', JSON.stringify(req.body, null, 2));
-  
   try {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
-    // Default location values (you can change these to your preferred location)
-    const defaultLatitude = 12.9716;  // Bangalore, India
-    const defaultLongitude = 77.5946; // Bangalore, India
-    const defaultHeading = 90;        // East direction (90 degrees)
-    
-    // Ensure location values are numbers
-    const latValue = parseFloat(latitude) || defaultLatitude;
-    const lngValue = parseFloat(longitude) || defaultLongitude;
-    const headingValue = parseFloat(heading) || defaultHeading;
-    
-    const insertValues = [
-      username,
-      hashedPassword,
-      name,
-      role,
-      email,
-      unit_name,
-      category,
-      phone_no,
-      id_no,
-      latValue,  // Ensure it's a number
-      lngValue,  // Ensure it's a number
-      headingValue  // Ensure it's a number
-    ];
-    
-    console.log('[REGISTER] Inserting values:', {
-      username,
-      name,
-      role,
-      latitude: insertValues[9],
-      longitude: insertValues[10],
-      heading: insertValues[11],
-      usingDefaults: !(latitude && longitude && heading)
-    });
-    
-    console.log('[REGISTER] About to execute INSERT query with values:', insertValues);
-    
     const result = await pool.query(
       `INSERT INTO users (
         username, password, name, role, email, unit, category, "MobileNumber", "EmployeeID", latitude, longitude, heading
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
       ) RETURNING id, username, name, role, email, unit, category, "MobileNumber", "EmployeeID", latitude, longitude, heading`,
-      insertValues
+      [
+        username,
+        hashedPassword,
+        name,
+        role,
+        email,
+        unit_name,
+        category,
+        phone_no,
+        id_no,
+        0, // latitude default
+        0, // longitude default
+        0  // heading default
+      ]
     );
-    console.log('[REGISTER] User created successfully:', {
-      id: result.rows[0].id,
-      username: result.rows[0].username,
-      role: result.rows[0].role,
-      latitude: result.rows[0].latitude,
-      longitude: result.rows[0].longitude,
-      heading: result.rows[0].heading
-    });
-    console.log('[REGISTER] Full returned row:', JSON.stringify(result.rows[0], null, 2));
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('[REGISTER] Backend error:', err);
@@ -310,13 +257,6 @@ router.put('/:id/location', async (req, res) => {
     return res.status(200).json({ success: true, user: result.rows[0] });
   } catch (err) {
     console.error('Database error during location update:', err);
-    console.error('Error details:', {
-      message: err.message,
-      code: err.code,
-      detail: err.detail,
-      hint: err.hint,
-      stack: err.stack
-    });
     return res.status(500).json({ error: err.message });
   }
 });
