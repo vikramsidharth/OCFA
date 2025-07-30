@@ -64,6 +64,11 @@ router.post('/register', async (req, res) => {
   try {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
+    // Default location values (you can change these to your preferred location)
+    const defaultLatitude = 12.9716;  // Bangalore, India
+    const defaultLongitude = 77.5946; // Bangalore, India
+    const defaultHeading = 90;        // East direction (90 degrees)
+    
     const insertValues = [
       username,
       hashedPassword,
@@ -74,9 +79,9 @@ router.post('/register', async (req, res) => {
       category,
       phone_no,
       id_no,
-      latitude || 0, // Use provided latitude or default to 0
-      longitude || 0, // Use provided longitude or default to 0
-      heading || 0  // Use provided heading or default to 0
+      latitude || defaultLatitude, // Use provided latitude or default to Bangalore
+      longitude || defaultLongitude, // Use provided longitude or default to Bangalore
+      heading || defaultHeading  // Use provided heading or default to East (90°)
     ];
     
     console.log('[REGISTER] Inserting values:', {
@@ -85,7 +90,8 @@ router.post('/register', async (req, res) => {
       role,
       latitude: insertValues[9],
       longitude: insertValues[10],
-      heading: insertValues[11]
+      heading: insertValues[11],
+      usingDefaults: !(latitude && longitude && heading)
     });
     
     const result = await pool.query(
