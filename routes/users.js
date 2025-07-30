@@ -293,6 +293,13 @@ router.put('/:id/location', async (req, res) => {
     return res.status(200).json({ success: true, user: result.rows[0] });
   } catch (err) {
     console.error('Database error during location update:', err);
+    console.error('Error details:', {
+      message: err.message,
+      code: err.code,
+      detail: err.detail,
+      hint: err.hint,
+      stack: err.stack
+    });
     return res.status(500).json({ error: err.message });
   }
 });
