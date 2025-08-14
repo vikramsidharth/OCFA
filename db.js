@@ -1,25 +1,32 @@
 const { Pool } = require('pg');
 
+console.log("NODE_ENV:", process.env.NODE_ENV);
+console.log("DATABASE_URL:", process.env.DATABASE_URL ? "[HIDDEN - FOUND]" : "NOT FOUND");
+
 const isProduction = process.env.NODE_ENV === 'production';
 
 const pool = new Pool(
   isProduction
     ? {
-        user: 'ocfa_rdea_user',
-        host: 'dpg-d23inammcj7s739egja0-a.oregon-postgres.render.com',
-        database: 'ocfa_rdea',
-        password: 'bo9wsbOddjXXjIeOOhWLYLxLGG2U8DLn',
-        port: 5432,
+        connectionString: process.env.DATABASE_URL,
         ssl: { rejectUnauthorized: false }
       }
     : {
-        user: 'postgres',          // local user
-        host: 'localhost',         // local host
-        database: 'OCFA',          // local DB name
-        password: '123456',        // local password
-        port: 5433,                 // local port
-        ssl: false
+        user: 'postgres',
+        host: 'localhost',
+        database: 'OCFA',
+        password: '123456',
+        port: 5433
       }
 );
+
+pool.connect()
+  .then(client => {
+    console.log("✅ Database connection successful");
+    client.release();
+  })
+  .catch(err => {
+    console.error("❌ Database connection error:", err.message);
+  });
 
 module.exports = pool;
