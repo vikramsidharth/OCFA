@@ -1,32 +1,20 @@
 const { Pool } = require('pg');
 
-console.log("NODE_ENV:", process.env.NODE_ENV);
-console.log("DATABASE_URL:", process.env.DATABASE_URL ? "[HIDDEN - FOUND]" : "NOT FOUND");
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('DATABASE_URL:', process.env.DATABASE_URL ? '[HIDDEN - FOUND]' : 'NOT FOUND');
 
-const isProduction = process.env.NODE_ENV === 'production';
+const hasConnStr = !!process.env.DATABASE_URL;
+const shouldUseSsl = (process.env.DB_SSL || 'false').toLowerCase() === 'true';
 
 const pool = new Pool(
-  isProduction
-    ? {
-        connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false }
-      }
-    : {
-        user: 'postgres',
-        host: 'localhost',
-        database: 'OCFA',
-        password: '123456',
-        port: 5433
-      }
+  hasConnStr
+    ? { connectionString: process.env.DATABASE_URL,
+        ssl: shouldUseSsl ? { rejectUnauthorized: false } : false }
+    : { user: 'postgres', host: 'localhost', database: 'OCFA', password: '123456', port: 5433 }
 );
 
 pool.connect()
-  .then(client => {
-    console.log("✅ Database connection successful");
-    client.release();
-  })
-  .catch(err => {
-    console.error("❌ Database connection error details:", err); // log full error object
-  });
+  .then(c => { console.log('✅ Database connection successful'); c.release(); })
+  .catch(err => { console.error('❌ Database connection error details:', err); });
 
 module.exports = pool;
