@@ -26,7 +26,7 @@ pool.connect()
     client.release();
   })
   .catch(err => {
-    console.error("❌ Database connection error:", err.message);
+    console.error("❌ Database connection error details:", err); // log full error object
   });
 
 module.exports = pool;
