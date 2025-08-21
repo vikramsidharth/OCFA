@@ -15,12 +15,12 @@ router.get('/', async (req, res) => {
       return res.json(result.rows[0]);
     } else if (role && unit) {
       const result = await pool.query(
-        'SELECT * FROM users WHERE role = $1 AND LOWER(unit) = LOWER($2) ORDER BY id',
+        'SELECT * FROM users WHERE LOWER(role) = LOWER($1) AND LOWER(unit) = LOWER($2) ORDER BY id',
         [role, unit]
       );
       return res.json(result.rows);
     } else if (role) {
-      const result = await pool.query('SELECT * FROM users WHERE role = $1 ORDER BY id', [role]);
+      const result = await pool.query('SELECT * FROM users WHERE LOWER(role) = LOWER($1) ORDER BY id', [role]);
       return res.json(result.rows);
     } else if (unit) {
       const result = await pool.query('SELECT * FROM users WHERE LOWER(unit) = LOWER($1) ORDER BY id', [unit]);
@@ -30,6 +30,33 @@ router.get('/', async (req, res) => {
       res.json(result.rows);
     }
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/users/:id - update soldier details (name, email, unit, MobileNumber, role)
+router.put('/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, email, unit, MobileNumber, role } = req.body || {};
+  try {
+    const result = await pool.query(
+      `UPDATE users SET
+        name = COALESCE($1, name),
+        email = COALESCE($2, email),
+        unit = COALESCE($3, unit),
+        "MobileNumber" = COALESCE($4, "MobileNumber"),
+        role = COALESCE($5, role),
+        updated_at = NOW()
+       WHERE id = $6
+       RETURNING id, username, name, role, email, unit, "MobileNumber"`,
+      [name || null, email || null, unit || null, MobileNumber || null, role || null, id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Error updating user:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -170,31 +197,61 @@ router.get('/soldier-overview', async (req, res) => {
     return res.status(400).json({ error: 'commander_id is required' });
   }
   try {
-    // 1. Get all unit_ids for this commander
+    // A) Determine the commander's unit name (fallback path)
+    let commanderUnit = null;
+    try {
+      const cu = await pool.query('SELECT unit FROM users WHERE id = $1', [commander_id]);
+      commanderUnit = (cu.rows[0]?.unit || null);
+    } catch {}
+
+    // B) Primary: mapping-based units assigned to the commander
     const unitResult = await pool.query(
       'SELECT unit_id FROM commander_unit_mappings WHERE commander_id = $1',
       [commander_id]
     );
-    if (unitResult.rows.length === 0) {
-      return res.json([]); // No units assigned
-    }
     const unitIds = unitResult.rows.map(row => row.unit_id);
 
-    // 2. Get all soldiers in these units
+    // B1) Soldiers via mapping tables
+    let mappingSoldiers = [];
+    if (unitIds.length > 0) {
     const soldierResult = await pool.query(
       `SELECT u.id, u.username, u.name, u.unit
        FROM users u
        JOIN soldier_unit_mappings s ON u.id = s.soldier_id
-       WHERE s.unit_id = ANY($1::int[]) AND u.role = 'soldier'`,
+         WHERE s.unit_id = ANY($1::int[]) AND LOWER(u.role) = 'soldier'`,
       [unitIds]
     );
-    const soldiers = soldierResult.rows;
+      mappingSoldiers = soldierResult.rows;
+    }
+
+    // B2) Fallback: soldiers by unit name match (case-insensitive)
+    let unitNameSoldiers = [];
+    if (commanderUnit) {
+      const unitName = commanderUnit.toLowerCase();
+      const sr = await pool.query(
+        `SELECT id, username, name, unit
+         FROM users
+         WHERE LOWER(unit) = $1 AND LOWER(role) = 'soldier'
+         ORDER BY id`,
+        [unitName]
+      );
+      unitNameSoldiers = sr.rows;
+    }
+
+    // Combine and deduplicate soldiers by id
+    const combinedMap = new Map();
+    [...mappingSoldiers, ...unitNameSoldiers].forEach(s => {
+      if (s && !combinedMap.has(s.id)) combinedMap.set(s.id, s);
+    });
+    const soldiers = Array.from(combinedMap.values());
+
     if (soldiers.length === 0) {
       return res.json([]);
     }
-    // 3. For each soldier, get latest location, health, and operation details
+
+    // Enrich with latest location, health, and operation details
     const soldierIds = soldiers.map(s => s.id);
-    // Latest location
+
     const locationResult = await pool.query(
       `SELECT DISTINCT ON (user_id) user_id, latitude, longitude, recorded_at
        FROM user_location_history
@@ -203,28 +260,22 @@ router.get('/soldier-overview', async (req, res) => {
       [soldierIds]
     );
     const locationMap = {};
-    locationResult.rows.forEach(row => {
-      locationMap[row.user_id] = row;
-    });
-    // Health vitals
+    locationResult.rows.forEach(row => { locationMap[row.user_id] = row; });
+
     const healthResult = await pool.query(
       `SELECT * FROM advanced_health_details WHERE user_id = ANY($1::int[])`,
       [soldierIds]
     );
     const healthMap = {};
-    healthResult.rows.forEach(row => {
-      healthMap[row.user_id] = row;
-    });
-    // Operation details (tasks/skills)
+    healthResult.rows.forEach(row => { healthMap[row.user_id] = row; });
+
     const opResult = await pool.query(
       `SELECT * FROM operation_details WHERE user_id = ANY($1::int[])`,
       [soldierIds]
     );
     const opMap = {};
-    opResult.rows.forEach(row => {
-      opMap[row.user_id] = row;
-    });
-    // Compose response
+    opResult.rows.forEach(row => { opMap[row.user_id] = row; });
+
     const overview = soldiers.map(soldier => ({
       id: soldier.id,
       username: soldier.username,

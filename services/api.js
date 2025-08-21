@@ -2,7 +2,7 @@ import { io as socketIOClient } from 'socket.io-client';
 import Constants from 'expo-constants';
 
 // ✅ Set API base URL from env or fallback to localhost (for dev)
-let API_BASE_URL = Constants.expoConfig?.extra?.BACKEND_API_URL || 'http://192.168.1.4:3001/api';
+let API_BASE_URL = Constants.expoConfig?.extra?.BACKEND_API_URL || 'u';
 
 console.log('[API] Using API_BASE_URL:', API_BASE_URL);
 

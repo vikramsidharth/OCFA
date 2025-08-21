@@ -1,44 +1,25 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
-const { sendEmergencyAlert, sendZoneBreachAlert } = require('../services/firebaseService');
+const { sendFirebaseNotification, sendNotificationsByFilter } = require('../services/firebaseService');
 
-// GET /api/alerts - Get all alerts with filtering
+// GET /api/alerts - Get all alerts with filtering (matches simple alerts schema)
 router.get('/', async (req, res) => {
-  const { status, severity, alertType, unit, limit = 50, offset = 0 } = req.query;
-  
+  const { status, severity, category, unit, userId, limit = 50, offset = 0 } = req.query;
   try {
     let query = 'SELECT * FROM alerts WHERE 1=1';
-    let params = [];
-    let paramCount = 0;
+    const params = [];
+    let p = 0;
 
-    if (status) {
-      paramCount++;
-      query += ` AND status = $${paramCount}`;
-      params.push(status);
-    }
-
-    if (severity) {
-      paramCount++;
-      query += ` AND severity = $${paramCount}`;
-      params.push(severity);
-    }
-
-    if (alertType) {
-      paramCount++;
-      query += ` AND alert_type = $${paramCount}`;
-      params.push(alertType);
-    }
-
-    if (unit) {
-      paramCount++;
-      query += ` AND $${paramCount} = ANY(affected_units)`;
-      params.push(unit);
-    }
+    if (status) { p++; query += ` AND status = $${p}`; params.push(status); }
+    if (severity) { p++; query += ` AND severity = $${p}`; params.push(severity); }
+    if (category) { p++; query += ` AND category = $${p}`; params.push(category); }
+    if (unit) { p++; query += ` AND unit = $${p}`; params.push(unit); }
+    if (userId) { p++; query += ` AND user_id = $${p}`; params.push(parseInt(userId)); }
 
     query += ' ORDER BY created_at DESC';
-    query += ` LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
-    params.push(parseInt(limit), parseInt(offset));
+    p++; query += ` LIMIT $${p}`; params.push(parseInt(limit));
+    p++; query += ` OFFSET $${p}`; params.push(parseInt(offset));
 
     const result = await pool.query(query, params);
     res.json(result.rows);
@@ -69,87 +50,57 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/alerts - Create new emergency alert
+// POST /api/alerts - Create a new alert and send push (matches simple alerts schema)
 router.post('/', async (req, res) => {
-  const { 
-    title, 
-    message, 
-    severity, 
-    affectedUnits, 
-    affectedUsers, 
-    latitude, 
-    longitude,
-    createdBy 
-  } = req.body;
-
+  const { category, message, severity = 'medium', status = 'active', userId, unit } = req.body;
   try {
-    // Validate required fields
-    if (!title || !message || !severity || !createdBy) {
-      return res.status(400).json({ 
-        error: 'Title, message, severity, and createdBy are required' 
-      });
+    if (!category || !message) {
+      return res.status(400).json({ error: 'category and message are required' });
     }
 
-    // Send emergency alert via Firebase
-    const alertResult = await sendEmergencyAlert({
-      title,
-      message,
-      severity,
-      affectedUnits,
-      affectedUsers,
-      latitude,
-      longitude,
-      createdBy
-    });
+    // Insert alert row matching provided schema
+    const insert = await pool.query(
+      `INSERT INTO alerts (category, message, severity, status, user_id, unit)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [category, message, severity, status, userId || null, unit || null]
+    );
+    const alert = insert.rows[0];
 
-    res.status(201).json({
-      message: 'Emergency alert created and sent successfully',
-      alertResult
-    });
+    // Build push payload
+    const push = {
+      title: category,
+      body: message,
+      data: {
+        type: category,
+        category,
+        severity,
+        status,
+        alertId: String(alert.id),
+      }
+    };
 
+    // Send push to specific user if provided, otherwise by unit if provided
+    let pushResult = null;
+    try {
+      if (userId) {
+        pushResult = await sendFirebaseNotification(userId, push);
+      } else if (unit) {
+        pushResult = await sendNotificationsByFilter({ unit, hasPushToken: true }, push);
+      }
+    } catch (pushErr) {
+      console.error('Push send failed:', pushErr.message);
+      // Do not fail the request if push fails
+    }
+
+    return res.status(201).json({ alert, pushResult });
   } catch (err) {
-    console.error('Error creating emergency alert:', err);
+    console.error('Error creating alert:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/alerts/zone-breach - Create zone breach alert
-router.post('/zone-breach', async (req, res) => {
-  const { 
-    zoneId, 
-    userId, 
-    breachType, 
-    latitude, 
-    longitude 
-  } = req.body;
-
-  try {
-    // Validate required fields
-    if (!zoneId || !userId || !breachType) {
-      return res.status(400).json({ 
-        error: 'Zone ID, user ID, and breach type are required' 
-      });
-    }
-
-    // Send zone breach alert via Firebase
-    const alertResult = await sendZoneBreachAlert({
-      zoneId,
-      userId,
-      breachType,
-      latitude,
-      longitude
-    });
-
-    res.status(201).json({
-      message: 'Zone breach alert created and sent successfully',
-      alertResult
-    });
-
-  } catch (err) {
-    console.error('Error creating zone breach alert:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+// Note: Additional specialized alert routes can be implemented similarly, using the same schema
 
 // PUT /api/alerts/:id/acknowledge - Acknowledge an alert
 router.put('/:id/acknowledge', async (req, res) => {

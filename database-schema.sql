@@ -88,24 +88,14 @@ CREATE TABLE IF NOT EXISTS notifications (
 -- Alerts table for emergency situations
 CREATE TABLE IF NOT EXISTS alerts (
     id SERIAL PRIMARY KEY,
-    alert_type VARCHAR(50) NOT NULL, -- 'emergency', 'zone_breach', 'assignment', 'system'
-    title VARCHAR(255) NOT NULL,
+    category VARCHAR(50) NOT NULL,
     message TEXT NOT NULL,
-    severity VARCHAR(20) NOT NULL, -- 'low', 'medium', 'high', 'critical'
-    status VARCHAR(50) DEFAULT 'active', -- 'active', 'acknowledged', 'resolved'
-    affected_units TEXT[], -- Array of affected units
-    affected_users INTEGER[], -- Array of affected user IDs
-    location_lat DECIMAL(10, 8),
-    location_lng DECIMAL(11, 8),
-    zone_id INTEGER REFERENCES zones(id),
-    assignment_id INTEGER REFERENCES assignments(id),
-    created_by INTEGER REFERENCES users(id),
-    acknowledged_by INTEGER REFERENCES users(id),
-    resolved_by INTEGER REFERENCES users(id),
+    severity VARCHAR(20) DEFAULT 'medium',
+    status VARCHAR(20) DEFAULT 'active',
+    user_id INTEGER REFERENCES users(id),
+    unit VARCHAR(100),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    acknowledged_at TIMESTAMP,
-    resolved_at TIMESTAMP,
-    expires_at TIMESTAMP
+    resolved_at TIMESTAMP
 );
 
 -- User notification preferences
@@ -144,6 +134,8 @@ CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications(type);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
 CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+CREATE INDEX IF NOT EXISTS idx_alerts_category ON alerts(category);
+CREATE INDEX IF NOT EXISTS idx_alerts_unit ON alerts(unit);
 CREATE INDEX IF NOT EXISTS idx_zone_breaches_user_id ON zone_breaches(user_id);
 CREATE INDEX IF NOT EXISTS idx_zone_breaches_zone_id ON zone_breaches(zone_id);
 CREATE INDEX IF NOT EXISTS idx_assignments_assigned_to ON assignments(assigned_to);
@@ -170,7 +162,60 @@ CREATE TRIGGER update_assignments_updated_at BEFORE UPDATE ON assignments
 CREATE TRIGGER update_user_notification_preferences_updated_at BEFORE UPDATE ON user_notification_preferences
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Insert default notification preferences for existing users
-INSERT INTO user_notification_preferences (user_id, zone_alerts, assignment_alerts, emergency_alerts, system_notifications)
-SELECT id, true, true, true, true FROM users
-ON CONFLICT (user_id) DO NOTHING;
+
+-- Notify channel for alerts insert
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'notify_alert_insert') THEN
+        CREATE OR REPLACE FUNCTION notify_alert_insert() RETURNS trigger AS $$
+        DECLARE
+            payload JSON;
+        BEGIN
+            payload := json_build_object(
+                'id', NEW.id,
+                'category', NEW.category,
+                'message', NEW.message,
+                'severity', NEW.severity,
+                'status', NEW.status,
+                'user_id', NEW.user_id,
+                'unit', NEW.unit,
+                'created_at', NEW.created_at
+            );
+            PERFORM pg_notify('alerts_inserted', payload::text);
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'tr_alerts_notify_insert'
+    ) THEN
+        CREATE TRIGGER tr_alerts_notify_insert
+        AFTER INSERT ON alerts
+        FOR EACH ROW
+        EXECUTE FUNCTION notify_alert_insert();
+    END IF;
+END $$;
+
+
+trigger for alerts
+CREATE OR REPLACE FUNCTION notify_alert_insert() RETURNS trigger AS $$
+DECLARE payload JSON;
+BEGIN
+  payload := json_build_object(
+    'id', NEW.id,'category', NEW.category,'message', NEW.message,
+    'severity', NEW.severity,'status', NEW.status,'user_id', NEW.user_id,
+    'unit', NEW.unit,'created_at', NEW.created_at
+  );
+  PERFORM pg_notify('alerts_inserted', payload::text);
+  RETURN NEW;
+END; $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tr_alerts_notify_insert
+AFTER INSERT ON alerts
+FOR EACH ROW EXECUTE FUNCTION notify_alert_insert();
