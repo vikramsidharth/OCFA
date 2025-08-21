@@ -102,7 +102,7 @@ router.post('/', async (req, res) => {
 
 // Note: Additional specialized alert routes can be implemented similarly, using the same schema
 
-// PUT /api/alerts/:id/acknowledge - Acknowledge an alert
+// PUT /api/alerts/:id/acknowledge - Acknowledge an alert (also pushes to creator or unit)
 router.put('/:id/acknowledge', async (req, res) => {
   const { id } = req.params;
   const { acknowledgedBy } = req.body;
@@ -122,14 +122,30 @@ router.put('/:id/acknowledge', async (req, res) => {
       return res.status(404).json({ error: 'Alert not found' });
     }
 
-    res.json(result.rows[0]);
+    const updated = result.rows[0];
+
+    // Push notify: inform creator or unit subscribers that alert was acknowledged
+    try {
+      const push = {
+        title: 'Alert Acknowledged',
+        body: `Alert #${id} acknowledged`,
+        data: { type: 'alert-ack', alertId: String(id) }
+      };
+      if (updated.user_id) {
+        await sendFirebaseNotification(updated.user_id, push);
+      } else if (updated.unit) {
+        await sendNotificationsByFilter({ unit: updated.unit, hasPushToken: true }, push);
+      }
+    } catch (_) {}
+
+    res.json(updated);
   } catch (err) {
     console.error('Error acknowledging alert:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/alerts/:id/resolve - Resolve an alert
+// PUT /api/alerts/:id/resolve - Resolve an alert (also pushes)
 router.put('/:id/resolve', async (req, res) => {
   const { id } = req.params;
   const { resolvedBy, resolutionNotes } = req.body;
@@ -149,7 +165,21 @@ router.put('/:id/resolve', async (req, res) => {
       return res.status(404).json({ error: 'Alert not found' });
     }
 
-    res.json(result.rows[0]);
+    const updated = result.rows[0];
+    try {
+      const push = {
+        title: 'Alert Resolved',
+        body: `Alert #${id} resolved`,
+        data: { type: 'alert-resolve', alertId: String(id) }
+      };
+      if (updated.user_id) {
+        await sendFirebaseNotification(updated.user_id, push);
+      } else if (updated.unit) {
+        await sendNotificationsByFilter({ unit: updated.unit, hasPushToken: true }, push);
+      }
+    } catch (_) {}
+
+    res.json(updated);
   } catch (err) {
     console.error('Error resolving alert:', err);
     res.status(500).json({ error: err.message });

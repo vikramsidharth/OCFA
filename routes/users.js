@@ -38,6 +38,15 @@ router.get('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
   const { name, email, unit, MobileNumber, role } = req.body || {};
+
+  // Normalize placeholder/null-like values to actual nulls to avoid strings like "[null]"
+  const normalizeNullish = (v) => {
+    if (v === undefined || v === null) return null;
+    const s = String(v).trim().toLowerCase();
+    if (s === '' || s === 'null' || s === '[null]' || s === 'undefined' || s === 'na' || s === 'n/a') return null;
+    return v;
+  };
+
   try {
     const result = await pool.query(
       `UPDATE users SET
@@ -45,11 +54,17 @@ router.put('/:id', async (req, res) => {
         email = COALESCE($2, email),
         unit = COALESCE($3, unit),
         "MobileNumber" = COALESCE($4, "MobileNumber"),
-        role = COALESCE($5, role),
-        updated_at = NOW()
+        role = COALESCE($5, role)
        WHERE id = $6
        RETURNING id, username, name, role, email, unit, "MobileNumber"`,
-      [name || null, email || null, unit || null, MobileNumber || null, role || null, id]
+      [
+        normalizeNullish(name),
+        normalizeNullish(email),
+        normalizeNullish(unit),
+        normalizeNullish(MobileNumber),
+        normalizeNullish(role),
+        id,
+      ]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -530,10 +545,10 @@ router.put('/update-tokens', async (req, res) => {
   try {
     const result = await pool.query(
       `UPDATE users 
-       SET fcm_token = $1, expo_token = $2, device_type = $3, updated_at = NOW()
+       SET fcm_token = $1, expo_token = $2, device_type = $3
        WHERE id = $4
        RETURNING id, username, fcm_token, expo_token, device_type`,
-      [fcmToken, expoToken, deviceType, userId]
+      [fcmToken || null, expoToken || null, deviceType || null, userId]
     );
     
     if (result.rows.length === 0) {
