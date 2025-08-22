@@ -535,33 +535,37 @@ router.post('/registration-requests/:id/reject', async (req, res) => {
 });
 
 // PUT /api/users/update-tokens
+// Kept for backward compatibility, but will not require DB columns
 router.put('/update-tokens', async (req, res) => {
-  const { userId, expoToken, fcmToken, deviceType } = req.body;
-  
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID is required' });
-  }
-  
+  // Accept and ignore without error so mobile can call it safely
   try {
-    const result = await pool.query(
-      `UPDATE users 
-       SET fcm_token = $1, expo_token = $2, device_type = $3
-       WHERE id = $4
-       RETURNING id, username, fcm_token, expo_token, device_type`,
-      [fcmToken || null, expoToken || null, deviceType || null, userId]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    res.json({
-      message: 'Tokens updated successfully',
-      user: result.rows[0]
-    });
+    res.json({ message: 'Accepted (no DB storage). Consider topic subscription endpoints instead.' });
   } catch (err) {
-    console.error('Error updating tokens:', err);
-    res.status(500).json({ error: err.message });
+    res.status(200).json({ message: 'Accepted' });
+  }
+});
+
+// POST /api/users/subscribe-topic   { fcmToken, topic }
+router.post('/subscribe-topic', async (req, res) => {
+  try {
+    const { fcmToken, topic = 'alerts' } = req.body || {};
+    const { subscribeTokenToTopic } = require('../services/firebaseService');
+    const out = await subscribeTokenToTopic(fcmToken, topic);
+    res.json(out);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// POST /api/users/unsubscribe-topic   { fcmToken, topic }
+router.post('/unsubscribe-topic', async (req, res) => {
+  try {
+    const { fcmToken, topic = 'alerts' } = req.body || {};
+    const { unsubscribeTokenFromTopic } = require('../services/firebaseService');
+    const out = await unsubscribeTokenFromTopic(fcmToken, topic);
+    res.json(out);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

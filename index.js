@@ -3,7 +3,7 @@ const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
 const pool = require('./db');
-const { sendFirebaseNotification, sendNotificationsByFilter } = require('./services/firebaseService');
+const { sendFirebaseNotification, sendNotificationsByFilter, sendTopicNotification } = require('./services/firebaseService');
 
 // Import routes
 const notificationsRouter = require('./routes/notifications');
@@ -184,6 +184,8 @@ server.listen(PORT, '0.0.0.0', () => {
           await sendFirebaseNotification(user_id, push);
         } else if (unit) {
           await sendNotificationsByFilter({ unit, hasPushToken: true }, push);
+        } else {
+          await sendTopicNotification('alerts', push);
         }
       } catch (err) {
         console.error('Failed to handle alerts_inserted notification:', err.message);

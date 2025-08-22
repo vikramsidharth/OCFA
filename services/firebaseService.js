@@ -36,7 +36,7 @@ try {
 
 /**
  * Send Firebase Cloud Message to a specific user
- * @param {number} userId - User ID to send notification to
+ * @param {number} userId - User Login ID to send notification to
  * @param {Object} message - Message object with title, body, and data
  * @returns {Promise<Object>} - FCM response
  */
@@ -150,7 +150,7 @@ async function sendFirebaseNotification(userId, message) {
 
 /**
  * Send notification to multiple users
- * @param {Array<number>} userIds - Array of user IDs
+ * @param {Array<number>} userIds - Array of User Login IDs
  * @param {Object} message - Message object
  * @returns {Promise<Array>} - Array of results
  */
@@ -520,3 +520,68 @@ module.exports = {
   sendEmergencyAlert,
   sendAssignmentNotification
 };
+
+// Topic utilities (no DB storage required)
+/**
+ * Subscribe an FCM device token to a topic
+ */
+async function subscribeTokenToTopic(fcmToken, topic) {
+  if (!firebaseApp) throw new Error('Firebase Admin SDK not initialized');
+  if (!fcmToken) throw new Error('Missing fcmToken');
+  if (!topic) throw new Error('Missing topic');
+  const normalized = topic.replace(/[^a-zA-Z0-9-_.~%]/g, '-').toLowerCase();
+  const res = await admin.messaging().subscribeToTopic([fcmToken], normalized);
+  return { topic: normalized, res };
+}
+
+/**
+ * Unsubscribe an FCM device token from a topic
+ */
+async function unsubscribeTokenFromTopic(fcmToken, topic) {
+  if (!firebaseApp) throw new Error('Firebase Admin SDK not initialized');
+  if (!fcmToken) throw new Error('Missing fcmToken');
+  if (!topic) throw new Error('Missing topic');
+  const normalized = topic.replace(/[^a-zA-Z0-9-_.~%]/g, '-').toLowerCase();
+  const res = await admin.messaging().unsubscribeFromTopic([fcmToken], normalized);
+  return { topic: normalized, res };
+}
+
+/**
+ * Send a notification to an FCM topic
+ */
+async function sendTopicNotification(topic, message) {
+  if (!firebaseApp) throw new Error('Firebase Admin SDK not initialized');
+  const normalized = topic.replace(/[^a-zA-Z0-9-_.~%]/g, '-').toLowerCase();
+  const msg = {
+    topic: normalized,
+    notification: {
+      title: message.title,
+      body: message.body,
+    },
+    data: {
+      ...(message.data || {}),
+      topic: normalized,
+      timestamp: new Date().toISOString(),
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        channelId: getChannelId(message.data?.type),
+        priority: 'high',
+        defaultSound: true,
+        defaultVibrateTimings: true,
+        icon: 'ic_notification',
+        color: getNotificationColor(message.data?.type),
+      },
+    },
+    apns: {
+      payload: { aps: { sound: 'default', badge: 1 } },
+    },
+  };
+  const response = await admin.messaging().send(msg);
+  return { topic: normalized, messageId: response };
+}
+
+module.exports.subscribeTokenToTopic = subscribeTokenToTopic;
+module.exports.unsubscribeTokenFromTopic = unsubscribeTokenFromTopic;
+module.exports.sendTopicNotification = sendTopicNotification;

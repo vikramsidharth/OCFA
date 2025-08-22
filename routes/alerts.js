@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
-const { sendFirebaseNotification, sendNotificationsByFilter } = require('../services/firebaseService');
+const { sendFirebaseNotification, sendNotificationsByFilter, sendTopicNotification } = require('../services/firebaseService');
 
 // GET /api/alerts - Get all alerts with filtering (matches simple alerts schema)
 router.get('/', async (req, res) => {
@@ -80,13 +80,15 @@ router.post('/', async (req, res) => {
       }
     };
 
-    // Send push to specific user if provided, otherwise by unit if provided
+    // Send push to specific user if provided, otherwise by unit if provided, otherwise broadcast to 'alerts' topic
     let pushResult = null;
     try {
       if (userId) {
         pushResult = await sendFirebaseNotification(userId, push);
       } else if (unit) {
         pushResult = await sendNotificationsByFilter({ unit, hasPushToken: true }, push);
+      } else {
+        pushResult = await sendTopicNotification('alerts', push);
       }
     } catch (pushErr) {
       console.error('Push send failed:', pushErr.message);
