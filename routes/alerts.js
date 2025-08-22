@@ -102,6 +102,168 @@ router.post('/', async (req, res) => {
   }
 });
 
+// POST /api/alerts/test-push - Test push notification system
+router.post('/test-push', async (req, res) => {
+  const { userId, unit, type = 'test', message = 'This is a test notification' } = req.body;
+  
+  try {
+    console.log('🧪 Testing push notification system...');
+    
+    // Create test alert
+    const testAlert = {
+      category: type,
+      message: message,
+      severity: 'medium',
+      status: 'active',
+      userId: userId || null,
+      unit: unit || null
+    };
+
+    // Insert test alert
+    const insert = await pool.query(
+      `INSERT INTO alerts (category, message, severity, status, user_id, unit)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [testAlert.category, testAlert.message, testAlert.severity, testAlert.status, testAlert.userId, testAlert.unit]
+    );
+    const alert = insert.rows[0];
+
+    // Build enhanced test push payload
+    const push = {
+      title: `🧪 TEST: ${type.toUpperCase()}`,
+      body: message,
+      data: {
+        type: type,
+        category: type,
+        severity: 'medium',
+        status: 'active',
+        alertId: String(alert.id),
+        isTest: true,
+        timestamp: new Date().toISOString()
+      }
+    };
+
+    let pushResult = null;
+    let testResults = {};
+
+    // Test different push scenarios
+    try {
+      if (userId) {
+        console.log(`🧪 Testing push to specific user: ${userId}`);
+        pushResult = await sendFirebaseNotification(userId, push);
+        testResults.specificUser = pushResult;
+      } else if (unit) {
+        console.log(`🧪 Testing push to unit: ${unit}`);
+        pushResult = await sendNotificationsByFilter({ unit, hasPushToken: true }, push);
+        testResults.unitPush = pushResult;
+      } else {
+        console.log('🧪 Testing broadcast push');
+        pushResult = await sendTopicNotification('alerts', push);
+        testResults.broadcast = pushResult;
+      }
+
+      console.log('✅ Test push completed successfully');
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Test push notification sent successfully',
+        alert: alert,
+        pushResult: pushResult,
+        testResults: testResults,
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (pushErr) {
+      console.error('❌ Test push failed:', pushErr.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Test push failed',
+        error: pushErr.message,
+        alert: alert,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Error in test push:', err);
+    res.status(500).json({ 
+      success: false,
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// POST /api/alerts/test-emergency - Test emergency notification
+router.post('/test-emergency', async (req, res) => {
+  const { severity = 'high', message = 'This is a test emergency alert' } = req.body;
+  
+  try {
+    console.log('🚨 Testing emergency notification...');
+    
+    // Create emergency test alert
+    const emergencyAlert = {
+      category: 'emergency',
+      message: message,
+      severity: severity,
+      status: 'active',
+      userId: null,
+      unit: null
+    };
+
+    // Insert emergency alert
+    const insert = await pool.query(
+      `INSERT INTO alerts (category, message, severity, status, user_id, unit)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [emergencyAlert.category, emergencyAlert.message, emergencyAlert.severity, emergencyAlert.status, emergencyAlert.userId, emergencyAlert.unit]
+    );
+    const alert = insert.rows[0];
+
+    // Build emergency push payload
+    const push = {
+      title: `🚨 EMERGENCY: ${severity.toUpperCase()}`,
+      body: message,
+      data: {
+        type: 'emergency',
+        category: 'emergency',
+        severity: severity,
+        status: 'active',
+        alertId: String(alert.id),
+        requiresImmediateAction: severity === 'critical',
+        sound: 'emergency',
+        isTest: true,
+        timestamp: new Date().toISOString()
+      }
+    };
+
+    // Send to all commanders and supervisors
+    const pushResult = await sendNotificationsByFilter({ 
+      role: ['commander', 'supervisor'], 
+      hasPushToken: true 
+    }, push);
+
+    console.log('✅ Emergency test completed successfully');
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Emergency test notification sent successfully',
+      alert: alert,
+      pushResult: pushResult,
+      severity: severity,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Error in emergency test:', err);
+    res.status(500).json({ 
+      success: false,
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Note: Additional specialized alert routes can be implemented similarly, using the same schema
 
 // PUT /api/alerts/:id/acknowledge - Acknowledge an alert (also pushes to creator or unit)

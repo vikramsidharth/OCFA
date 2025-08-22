@@ -35,20 +35,24 @@ try {
 }
 
 /**
- * Send Firebase Cloud Message to a specific user
+ * Send Firebase Cloud Message to a specific user with retry logic
  * @param {number} userId - User Login ID to send notification to
  * @param {Object} message - Message object with title, body, and data
+ * @param {number} retryCount - Number of retries attempted
  * @returns {Promise<Object>} - FCM response
  */
-async function sendFirebaseNotification(userId, message) {
+async function sendFirebaseNotification(userId, message, retryCount = 0) {
   if (!firebaseApp) {
     throw new Error('Firebase Admin SDK not initialized');
   }
 
+  const maxRetries = 3;
+  const retryDelay = 1000 * Math.pow(2, retryCount); // Exponential backoff
+
   try {
     // Get user's FCM token from database
     const userResult = await pool.query(
-      'SELECT fcm_token, expo_token, username, role FROM users WHERE id = $1',
+      'SELECT fcm_token, expo_token, username, role, unit FROM users WHERE id = $1',
       [userId]
     );
 
@@ -63,6 +67,7 @@ async function sendFirebaseNotification(userId, message) {
     }
 
     const responses = [];
+    let hasSuccessfulDelivery = false;
 
     // Send FCM notification if token exists
     if (user.fcm_token) {
@@ -78,7 +83,9 @@ async function sendFirebaseNotification(userId, message) {
             userId: userId.toString(),
             username: user.username,
             role: user.role,
-            timestamp: new Date().toISOString()
+            unit: user.unit || '',
+            timestamp: new Date().toISOString(),
+            clickAction: 'FLUTTER_NOTIFICATION_CLICK'
           },
           android: {
             priority: 'high',
@@ -88,7 +95,9 @@ async function sendFirebaseNotification(userId, message) {
               defaultSound: true,
               defaultVibrateTimings: true,
               icon: 'ic_notification',
-              color: getNotificationColor(message.data?.type)
+              color: getNotificationColor(message.data?.type),
+              clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+              tag: message.data?.alertId || 'default'
             }
           },
           apns: {
@@ -96,24 +105,49 @@ async function sendFirebaseNotification(userId, message) {
               aps: {
                 sound: 'default',
                 badge: 1,
-                category: message.data?.type || 'default'
+                category: message.data?.type || 'default',
+                'mutable-content': 1
               }
+            },
+            headers: {
+              'apns-priority': '10',
+              'apns-push-type': 'alert'
+            }
+          },
+          webpush: {
+            headers: {
+              Urgency: 'high'
+            },
+            notification: {
+              icon: '/icon-192x192.png',
+              badge: '/badge-72x72.png',
+              tag: message.data?.alertId || 'default',
+              requireInteraction: message.data?.type === 'emergency'
             }
           }
         };
 
         const response = await admin.messaging().send(fcmMessage);
         responses.push({ type: 'fcm', success: true, messageId: response });
+        hasSuccessfulDelivery = true;
         
         // Log successful delivery
         await logNotificationDelivery(userId, 'fcm', 'delivered', response);
+        console.log(`✅ FCM notification sent successfully to user ${userId} (${user.username})`);
         
       } catch (fcmError) {
-        console.error(`FCM notification failed for user ${userId}:`, fcmError);
+        console.error(`❌ FCM notification failed for user ${userId}:`, fcmError.message);
         responses.push({ type: 'fcm', success: false, error: fcmError.message });
         
         // Log failed delivery
         await logNotificationDelivery(userId, 'fcm', 'failed', null, fcmError.message);
+        
+        // Retry logic for specific FCM errors
+        if (retryCount < maxRetries && shouldRetryFCMError(fcmError)) {
+          console.log(`🔄 Retrying FCM notification for user ${userId} (attempt ${retryCount + 1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          return sendFirebaseNotification(userId, message, retryCount + 1);
+        }
       }
     }
 
@@ -122,12 +156,14 @@ async function sendFirebaseNotification(userId, message) {
       try {
         const expoResponse = await sendExpoNotification(user.expo_token, message);
         responses.push({ type: 'expo', success: true, messageId: expoResponse });
+        hasSuccessfulDelivery = true;
         
         // Log successful delivery
         await logNotificationDelivery(userId, 'expo', 'delivered', expoResponse);
+        console.log(`✅ Expo notification sent successfully to user ${userId} (${user.username})`);
         
       } catch (expoError) {
-        console.error(`Expo notification failed for user ${userId}:`, expoError);
+        console.error(`❌ Expo notification failed for user ${userId}:`, expoError.message);
         responses.push({ type: 'expo', success: false, error: expoError.message });
         
         // Log failed delivery
@@ -138,50 +174,82 @@ async function sendFirebaseNotification(userId, message) {
     return {
       userId,
       username: user.username,
+      unit: user.unit,
       responses,
-      success: responses.some(r => r.success)
+      success: hasSuccessfulDelivery,
+      timestamp: new Date().toISOString()
     };
 
   } catch (error) {
-    console.error(`Error sending notification to user ${userId}:`, error);
+    console.error(`❌ Error sending notification to user ${userId}:`, error.message);
+    
+    // Retry logic for general errors
+    if (retryCount < maxRetries && shouldRetryGeneralError(error)) {
+      console.log(`🔄 Retrying notification for user ${userId} (attempt ${retryCount + 1}/${maxRetries})`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+      return sendFirebaseNotification(userId, message, retryCount + 1);
+    }
+    
     throw error;
   }
 }
 
 /**
- * Send notification to multiple users
+ * Send notification to multiple users with rate limiting
  * @param {Array<number>} userIds - Array of User Login IDs
  * @param {Object} message - Message object
+ * @param {number} rateLimit - Number of notifications per second (default: 100)
  * @returns {Promise<Array>} - Array of results
  */
-async function sendBulkFirebaseNotifications(userIds, message) {
+async function sendBulkFirebaseNotifications(userIds, message, rateLimit = 100) {
   const results = [];
+  const batchSize = Math.ceil(rateLimit / 10); // Process in smaller batches
+  const delayBetweenBatches = 1000 / (rateLimit / batchSize); // Calculate delay
   
-  for (const userId of userIds) {
-    try {
-      const result = await sendFirebaseNotification(userId, message);
-      results.push(result);
-    } catch (error) {
-      results.push({
-        userId,
-        success: false,
-        error: error.message
-      });
+  console.log(`📤 Starting bulk notification send to ${userIds.length} users`);
+  
+  for (let i = 0; i < userIds.length; i += batchSize) {
+    const batch = userIds.slice(i, i + batchSize);
+    const batchPromises = batch.map(async (userId) => {
+      try {
+        const result = await sendFirebaseNotification(userId, message);
+        return result;
+      } catch (error) {
+        return {
+          userId,
+          success: false,
+          error: error.message,
+          timestamp: new Date().toISOString()
+        };
+      }
+    });
+    
+    const batchResults = await Promise.all(batchPromises);
+    results.push(...batchResults);
+    
+    // Rate limiting delay between batches
+    if (i + batchSize < userIds.length) {
+      await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
     }
   }
+  
+  const successCount = results.filter(r => r.success).length;
+  const failureCount = results.length - successCount;
+  
+  console.log(`📊 Bulk notification complete: ${successCount} successful, ${failureCount} failed out of ${userIds.length} total`);
   
   return results;
 }
 
 /**
- * Send notification to users by role or unit
+ * Send notification to users by role or unit with smart targeting
  * @param {Object} filters - Filters for users (role, unit, etc.)
  * @param {Object} message - Message object
- * @returns {Promise<Array>} - Array of results
+ * @returns {Promise<Object>} - Array of results
  */
 async function sendNotificationsByFilter(filters, message) {
   try {
-    let query = 'SELECT id FROM users WHERE 1=1';
+    let query = 'SELECT id, username, role, unit FROM users WHERE 1=1';
     let params = [];
     let paramCount = 0;
 
@@ -201,28 +269,34 @@ async function sendNotificationsByFilter(filters, message) {
       query += ' AND (fcm_token IS NOT NULL OR expo_token IS NOT NULL)';
     }
 
+    // Add active user filter
+    query += ' AND last_active > NOW() - INTERVAL \'24 hours\'';
+
     const result = await pool.query(query, params);
     const userIds = result.rows.map(row => row.id);
     
     if (userIds.length === 0) {
-      return { message: 'No users found matching criteria', count: 0 };
+      return { message: 'No users found matching criteria', count: 0, results: [] };
     }
 
+    console.log(`🎯 Sending notifications to ${userIds.length} users matching filters:`, filters);
     const results = await sendBulkFirebaseNotifications(userIds, message);
+    
     return {
       message: `Sent notifications to ${userIds.length} users`,
       count: userIds.length,
-      results
+      results,
+      filters
     };
 
   } catch (error) {
-    console.error('Error sending notifications by filter:', error);
+    console.error('❌ Error sending notifications by filter:', error);
     throw error;
   }
 }
 
 /**
- * Send zone breach alert
+ * Send zone breach alert with enhanced targeting
  * @param {Object} breachData - Zone breach data
  * @returns {Promise<Object>} - Result
  */
@@ -254,31 +328,38 @@ async function sendZoneBreachAlert(breachData) {
     
     const user = userResult.rows[0];
     
-    // Create alert message
+    // Create alert message with enhanced data
     const message = {
-      title: `Zone Breach Alert - ${zone.name}`,
+      title: `🚫 Zone Breach Alert - ${zone.name}`,
       body: `${user.username} has ${breachType} ${zone.name} (${zone.zone_type})`,
       data: {
         type: 'zone-breach',
         category: 'zone',
         priority: 'high',
-        zoneId,
-        userId,
+        zoneId: zoneId.toString(),
+        userId: userId.toString(),
         breachType,
         zoneName: zone.name,
         zoneType: zone.zone_type,
-        latitude,
-        longitude,
+        latitude: latitude.toString(),
+        longitude: longitude.toString(),
         username: user.username,
         userRole: user.role,
-        userUnit: user.unit
+        userUnit: user.unit,
+        alertId: `zone-breach-${zoneId}-${Date.now()}`,
+        requiresAction: true
       }
     };
     
-    // Send to commanders and supervisors in the same unit
+    // Enhanced targeting: notify commanders, supervisors, and security personnel
     const commandersResult = await pool.query(
-      'SELECT id FROM users WHERE role IN ($1, $2) AND unit = $3 AND id != $4',
-      ['commander', 'supervisor', user.unit, userId]
+      `SELECT id FROM users 
+       WHERE role IN ('commander', 'supervisor', 'security') 
+       AND unit = $1 
+       AND id != $2 
+       AND (fcm_token IS NOT NULL OR expo_token IS NOT NULL)
+       AND last_active > NOW() - INTERVAL '24 hours'`,
+      [user.unit, userId]
     );
     
     const commanderIds = commandersResult.rows.map(row => row.id);
@@ -286,35 +367,39 @@ async function sendZoneBreachAlert(breachData) {
     if (commanderIds.length > 0) {
       const results = await sendBulkFirebaseNotifications(commanderIds, message);
       
-      // Create alert record
+      // Create alert record in database
       await pool.query(
-        `INSERT INTO alerts (alert_type, title, message, severity, status, affected_units, affected_users, 
-         location_lat, location_lng, zone_id, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        ['zone_breach', message.title, message.body, 'high', 'active', 
-         [user.unit], [userId], latitude, longitude, zoneId, userId]
+        `INSERT INTO alerts (category, message, severity, status, user_id, unit)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        ['zone_breach', message.body, 'high', 'active', userId, user.unit]
       );
+      
+      console.log(`🚨 Zone breach alert sent to ${commanderIds.length} commanders/supervisors`);
       
       return {
         message: 'Zone breach alert sent successfully',
         sentTo: commanderIds.length,
-        results
+        results,
+        zone: zone.name,
+        breachType
       };
     } else {
       return {
         message: 'No commanders found to notify',
-        sentTo: 0
+        sentTo: 0,
+        zone: zone.name,
+        breachType
       };
     }
     
   } catch (error) {
-    console.error('Error sending zone breach alert:', error);
+    console.error('❌ Error sending zone breach alert:', error);
     throw error;
   }
 }
 
 /**
- * Send emergency alert
+ * Send emergency alert with priority handling
  * @param {Object} emergencyData - Emergency data
  * @returns {Promise<Object>} - Result
  */
@@ -332,9 +417,12 @@ async function sendEmergencyAlert(emergencyData) {
         severity,
         affectedUnits,
         affectedUsers,
-        latitude,
-        longitude,
-        emergencyLevel: severity
+        latitude: latitude?.toString(),
+        longitude: longitude?.toString(),
+        emergencyLevel: severity,
+        alertId: `emergency-${Date.now()}`,
+        requiresImmediateAction: severity === 'critical',
+        sound: 'emergency'
       }
     };
     
@@ -348,7 +436,10 @@ async function sendEmergencyAlert(emergencyData) {
     // If specific units are affected, notify all users in those units
     if (affectedUnits && affectedUnits.length > 0) {
       const unitsResult = await pool.query(
-        'SELECT id FROM users WHERE unit = ANY($1)',
+        `SELECT id FROM users 
+         WHERE unit = ANY($1) 
+         AND (fcm_token IS NOT NULL OR expo_token IS NOT NULL)
+         AND last_active > NOW() - INTERVAL '24 hours'`,
         [affectedUnits]
       );
       const unitUserIds = unitsResult.rows.map(row => row.id);
@@ -358,8 +449,10 @@ async function sendEmergencyAlert(emergencyData) {
     // If no specific users/units, notify all commanders and supervisors
     if (userIds.length === 0) {
       const commandersResult = await pool.query(
-        'SELECT id FROM users WHERE role IN ($1, $2)',
-        ['commander', 'supervisor']
+        `SELECT id FROM users 
+         WHERE role IN ('commander', 'supervisor') 
+         AND (fcm_token IS NOT NULL OR expo_token IS NOT NULL)
+         AND last_active > NOW() - INTERVAL '24 hours'`
       );
       userIds = commandersResult.rows.map(row => row.id);
     }
@@ -368,37 +461,41 @@ async function sendEmergencyAlert(emergencyData) {
     userIds = userIds.filter(id => id !== createdBy);
     
     if (userIds.length > 0) {
-      const results = await sendBulkFirebaseNotifications(userIds, alertMessage);
+      // For critical emergencies, send immediately without rate limiting
+      const rateLimit = severity === 'critical' ? 1000 : 100;
+      const results = await sendBulkFirebaseNotifications(userIds, alertMessage, rateLimit);
       
       // Create alert record
       await pool.query(
-        `INSERT INTO alerts (alert_type, title, message, severity, status, affected_units, affected_users, 
-         location_lat, location_lng, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        ['emergency', title, message, severity, 'active', 
-         affectedUnits || [], affectedUsers || [], latitude, longitude, createdBy]
+        `INSERT INTO alerts (category, message, severity, status, user_id, unit)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        ['emergency', title, severity, 'active', createdBy, null]
       );
+      
+      console.log(`🚨 Emergency alert sent to ${userIds.length} recipients (severity: ${severity})`);
       
       return {
         message: 'Emergency alert sent successfully',
         sentTo: userIds.length,
+        severity,
         results
       };
     } else {
       return {
         message: 'No recipients found for emergency alert',
-        sentTo: 0
+        sentTo: 0,
+        severity
       };
     }
     
   } catch (error) {
-    console.error('Error sending emergency alert:', error);
+    console.error('❌ Error sending emergency alert:', error);
     throw error;
   }
 }
 
 /**
- * Send assignment notification
+ * Send assignment notification with enhanced metadata
  * @param {Object} assignmentData - Assignment data
  * @returns {Promise<Object>} - Result
  */
@@ -413,12 +510,14 @@ async function sendAssignmentNotification(assignmentData) {
         type: 'assignment',
         category: 'assignment',
         priority: priority === 'urgent' ? 'high' : 'normal',
-        assignmentId,
+        assignmentId: assignmentId.toString(),
         title,
         description,
         priority,
         dueDate,
-        dueDateFormatted: dueDate ? new Date(dueDate).toLocaleDateString() : null
+        dueDateFormatted: dueDate ? new Date(dueDate).toLocaleDateString() : null,
+        alertId: `assignment-${assignmentId}`,
+        requiresAction: true
       }
     };
     
@@ -431,13 +530,15 @@ async function sendAssignmentNotification(assignmentData) {
       [assignedTo, message.title, message.body, 'assignment', 'assignment', priority, 'system', message.data]
     );
     
+    console.log(`📋 Assignment notification sent to user ${assignedTo}`);
+    
     return {
       message: 'Assignment notification sent successfully',
       result
     };
     
   } catch (error) {
-    console.error('Error sending assignment notification:', error);
+    console.error('❌ Error sending assignment notification:', error);
     throw error;
   }
 }
@@ -469,6 +570,26 @@ function getNotificationColor(type) {
   }
 }
 
+function shouldRetryFCMError(error) {
+  // Retry on network errors, rate limits, and temporary failures
+  const retryableErrors = [
+    'messaging/unavailable',
+    'messaging/internal-error',
+    'messaging/server-unavailable',
+    'messaging/quota-exceeded',
+    'messaging/network-error'
+  ];
+  
+  return retryableErrors.some(errCode => error.code === errCode);
+}
+
+function shouldRetryGeneralError(error) {
+  // Retry on database connection issues and network errors
+  return error.code === 'ECONNRESET' || 
+         error.code === 'ENOTFOUND' || 
+         error.message.includes('timeout');
+}
+
 async function logNotificationDelivery(userId, method, status, messageId, errorMessage) {
   try {
     await pool.query(
@@ -481,22 +602,26 @@ async function logNotificationDelivery(userId, method, status, messageId, errorM
   }
 }
 
-// Expo notification fallback
+// Expo notification fallback with enhanced error handling
 async function sendExpoNotification(expoToken, message) {
   try {
     const response = await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Accept-encoding': 'gzip, deflate'
       },
       body: JSON.stringify({
         to: expoToken,
         title: message.title,
         body: message.body,
         data: message.data,
-        sound: 'default',
-        priority: 'high',
-        channelId: getChannelId(message.data?.type)
+        sound: message.data?.sound || 'default',
+        priority: message.data?.priority === 'urgent' ? 'high' : 'default',
+        channelId: getChannelId(message.data?.type),
+        badge: 1,
+        _displayInForeground: true
       }),
     });
     

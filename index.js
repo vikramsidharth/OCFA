@@ -145,7 +145,7 @@ io.on('connection', (socket) => {
       ) {
         // Update users table with new location
         await pool.query(
-          `UPDATE users SET latitude = $1, longitude = $2, heading = $3 WHERE id = $4`,
+          `UPDATE users SET latitude = $1, longitude = $2, heading = $3, last_active = CURRENT_TIMESTAMP WHERE id = $4`,
           [latitude, longitude, heading, user_id]
         );
       }
@@ -163,35 +163,194 @@ server.listen(PORT, '0.0.0.0', () => {
    console.log(`Server running on http://localhost:${PORT}`);
 }); 
 
-// Listen for Postgres NOTIFY on alerts inserts to send push for direct DB inserts
+// Enhanced PostgreSQL LISTEN/NOTIFY for alerts inserts with comprehensive error handling
 (async () => {
-  try {
-    const client = await pool.connect();
-    await client.query('LISTEN alerts_inserted');
-    console.log('Listening on channel alerts_inserted for new alerts');
+  let client = null;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
+  const reconnectDelay = 5000; // 5 seconds
 
-    client.on('notification', async (msg) => {
-      if (msg.channel !== 'alerts_inserted') return;
-      try {
-        const payload = JSON.parse(msg.payload || '{}');
-        const { id, category, message, severity, status, user_id, unit } = payload;
-        const push = {
-          title: category,
-          body: message,
-          data: { type: category, category, severity, status, alertId: String(id) }
-        };
-        if (user_id) {
-          await sendFirebaseNotification(user_id, push);
-        } else if (unit) {
-          await sendNotificationsByFilter({ unit, hasPushToken: true }, push);
-        } else {
-          await sendTopicNotification('alerts', push);
+  const setupAlertsListener = async () => {
+    try {
+      // Close existing connection if any
+      if (client) {
+        try {
+          await client.end();
+        } catch (e) {
+          console.warn('Error closing existing client:', e.message);
         }
-      } catch (err) {
-        console.error('Failed to handle alerts_inserted notification:', err.message);
       }
-    });
-  } catch (err) {
-    console.error('Failed to setup alerts LISTEN:', err.message);
-  }
+
+      // Create new client for LISTEN
+      client = await pool.connect();
+      
+      // Ensure trigger and function exist to publish NOTIFY on inserts
+      try {
+        await client.query(`
+          CREATE OR REPLACE FUNCTION notify_alerts_insert()
+          RETURNS trigger AS $$
+          BEGIN
+            PERFORM pg_notify('alerts_inserted', row_to_json(NEW)::text);
+            RETURN NULL;
+          END;
+          $$ LANGUAGE plpgsql;
+
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_trigger
+              WHERE tgname = 'alerts_insert_trigger'
+            ) THEN
+              CREATE TRIGGER alerts_insert_trigger
+              AFTER INSERT ON alerts
+              FOR EACH ROW
+              EXECUTE FUNCTION notify_alerts_insert();
+            END IF;
+          END$$;
+        `);
+        console.log('✅ Alerts insert trigger ensured');
+      } catch (e) {
+        console.warn('⚠️ Could not ensure alerts insert trigger:', e.message);
+      }
+
+      // Start listening
+      await client.query('LISTEN alerts_inserted');
+      console.log('🎧 Listening on channel alerts_inserted for new alerts');
+      
+      // Reset reconnect attempts on successful connection
+      reconnectAttempts = 0;
+
+      // Handle notifications
+      client.on('notification', async (msg) => {
+        if (msg.channel !== 'alerts_inserted') return;
+        
+        try {
+          console.log('📨 Received alert notification:', msg.payload);
+          const payload = JSON.parse(msg.payload || '{}');
+          
+          const { 
+            id, 
+            category, 
+            message, 
+            severity, 
+            status, 
+            user_id, 
+            unit,
+            created_at 
+          } = payload;
+
+          // Build push notification payload
+          const push = {
+            title: getAlertTitle(category, severity),
+            body: message,
+            data: { 
+              type: category, 
+              category, 
+              severity, 
+              status, 
+              alertId: String(id),
+              timestamp: created_at,
+              requiresAction: severity === 'critical' || category === 'zone_breach'
+            }
+          };
+
+          console.log(`🚀 Sending push notification for alert ${id} (${category})`);
+
+          // Send push based on targeting logic
+          let pushResult = null;
+          try {
+            if (user_id) {
+              // Send to specific user
+              pushResult = await sendFirebaseNotification(user_id, push);
+              console.log(`✅ Alert ${id} sent to user ${user_id}`);
+            } else if (unit) {
+              // Send to all users in the unit
+              pushResult = await sendNotificationsByFilter({ unit, hasPushToken: true }, push);
+              console.log(`✅ Alert ${id} sent to unit ${unit}`);
+            } else {
+              // Broadcast to all commanders and supervisors
+              pushResult = await sendNotificationsByFilter({ 
+                role: ['commander', 'supervisor'], 
+                hasPushToken: true 
+              }, push);
+              console.log(`✅ Alert ${id} broadcast to commanders/supervisors`);
+            }
+          } catch (pushError) {
+            console.error(`❌ Failed to send push for alert ${id}:`, pushError.message);
+            
+            // Fallback: try topic notification
+            try {
+              await sendTopicNotification('alerts', push);
+              console.log(`🔄 Alert ${id} sent via topic fallback`);
+            } catch (topicError) {
+              console.error(`❌ Topic fallback also failed for alert ${id}:`, topicError.message);
+            }
+          }
+
+        } catch (err) {
+          console.error('❌ Failed to handle alerts_inserted notification:', err.message);
+        }
+      });
+
+      // Handle client errors
+      client.on('error', (err) => {
+        console.error('❌ Database client error:', err.message);
+        scheduleReconnect();
+      });
+
+      // Handle client end
+      client.on('end', () => {
+        console.log('📴 Database client disconnected');
+        scheduleReconnect();
+      });
+
+    } catch (err) {
+      console.error('❌ Failed to setup alerts LISTEN:', err.message);
+      scheduleReconnect();
+    }
+  };
+
+  const scheduleReconnect = () => {
+    if (reconnectAttempts < maxReconnectAttempts) {
+      reconnectAttempts++;
+      console.log(`🔄 Scheduling reconnect attempt ${reconnectAttempts}/${maxReconnectAttempts} in ${reconnectDelay}ms`);
+      setTimeout(setupAlertsListener, reconnectDelay);
+    } else {
+      console.error('❌ Max reconnect attempts reached. Alerts listener disabled.');
+    }
+  };
+
+  // Helper function to generate alert titles
+  const getAlertTitle = (category, severity) => {
+    const emoji = {
+      'emergency': '🚨',
+      'zone_breach': '🚫',
+      'assignment': '📋',
+      'system': '⚙️'
+    }[category] || '📢';
+
+    const severityText = severity === 'critical' ? 'CRITICAL' : 
+                        severity === 'high' ? 'HIGH' : 
+                        severity === 'medium' ? 'MEDIUM' : 'LOW';
+
+    return `${emoji} ${severityText} ${category.toUpperCase().replace('_', ' ')}`;
+  };
+
+  // Start the listener
+  await setupAlertsListener();
+
+  // Graceful shutdown
+  process.on('SIGINT', async () => {
+    console.log('🛑 Shutting down alerts listener...');
+    if (client) {
+      try {
+        await client.end();
+        console.log('✅ Database client closed');
+      } catch (e) {
+        console.error('❌ Error closing database client:', e.message);
+      }
+    }
+    process.exit(0);
+  });
+
 })();
