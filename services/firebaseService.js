@@ -654,6 +654,7 @@ async function subscribeTokenToTopic(fcmToken, topic) {
   if (!firebaseApp) throw new Error('Firebase Admin SDK not initialized');
   if (!fcmToken) throw new Error('Missing fcmToken');
   if (!topic) throw new Error('Missing topic');
+  
   const normalized = topic.replace(/[^a-zA-Z0-9-_.~%]/g, '-').toLowerCase();
   const res = await admin.messaging().subscribeToTopic([fcmToken], normalized);
   return { topic: normalized, res };

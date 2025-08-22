@@ -34,48 +34,6 @@ router.get('/', async (req, res) => {
   }
 });
 
-// PUT /api/users/:id - update soldier details (name, email, unit, MobileNumber, role)
-router.put('/:id', async (req, res) => {
-  const { id } = req.params;
-  const { name, email, unit, MobileNumber, role } = req.body || {};
-
-  // Normalize placeholder/null-like values to actual nulls to avoid strings like "[null]"
-  const normalizeNullish = (v) => {
-    if (v === undefined || v === null) return null;
-    const s = String(v).trim().toLowerCase();
-    if (s === '' || s === 'null' || s === '[null]' || s === 'undefined' || s === 'na' || s === 'n/a') return null;
-    return v;
-  };
-
-  try {
-    const result = await pool.query(
-      `UPDATE users SET
-        name = COALESCE($1, name),
-        email = COALESCE($2, email),
-        unit = COALESCE($3, unit),
-        "MobileNumber" = COALESCE($4, "MobileNumber"),
-        role = COALESCE($5, role)
-       WHERE id = $6
-       RETURNING id, username, name, role, email, unit, "MobileNumber"`,
-      [
-        normalizeNullish(name),
-        normalizeNullish(email),
-        normalizeNullish(unit),
-        normalizeNullish(MobileNumber),
-        normalizeNullish(role),
-        id,
-      ]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('Error updating user:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // POST /api/users/register
 router.post('/register', async (req, res) => {
   const {
@@ -307,86 +265,54 @@ router.get('/soldier-overview', async (req, res) => {
   }
 });
 
-// PUT /api/users/:id/location
-router.put('/:id/location', async (req, res) => {
-  const userId = req.params.id;
-  const { latitude, longitude, heading } = req.body;
-  const safeHeading = typeof heading === 'number' && !isNaN(heading) ? heading : 0;
-  console.log('--- BACKEND /users/:id/location ---');
-  console.log(`Received location update for userId: ${userId}`);
-  console.log(`Payload: { latitude: ${latitude}, longitude: ${longitude}, heading: ${safeHeading} }`);
-  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
-    console.error('Validation Error: latitude and longitude must be numbers.');
-    return res.status(400).json({ error: 'latitude and longitude must be numbers' });
-  }
+// PUT /api/users/update-tokens
+// Kept for backward compatibility, but will not require DB columns
+router.put('/update-tokens', async (req, res) => {
+  // Accept and ignore without error so mobile can call it safely
   try {
-    const result = await pool.query(
-      'UPDATE users SET latitude = $1, longitude = $2, heading = $3 WHERE id = $4 RETURNING *',
-      [latitude, longitude, safeHeading, userId]
-    );
-    if (result.rows.length === 0) {
-      console.error('User not found for id:', userId);
-      return res.status(404).json({ error: 'User not found' });
-    }
-    console.log('Location update successful for userId:', userId);
-    return res.status(200).json({ success: true, user: result.rows[0] });
+    res.json({ message: 'Accepted (no DB storage). Consider topic subscription endpoints instead.' });
   } catch (err) {
-    console.error('Database error during location update:', err);
-    return res.status(500).json({ error: err.message });
+    res.status(200).json({ message: 'Accepted' });
   }
 });
 
-// PUT /api/users/:id/photo
-// Accepts JSON { photoBase64: string } where string can be raw base64 or a data URI (e.g., data:image/jpeg;base64,....)
-router.put('/:id/photo', async (req, res) => {
-  const userId = req.params.id;
-  let { photoBase64 } = req.body || {};
+// POST /api/users/subscribe-topic   { fcmToken, topic }
+router.post('/subscribe-topic', async (req, res) => {
   try {
-    if (!photoBase64 || typeof photoBase64 !== 'string') {
-      return res.status(400).json({ error: 'photoBase64 is required' });
+    const { fcmToken, topic = 'alerts' } = req.body || {};
+    console.log('📱 Subscribing FCM token to topic:', { fcmToken: fcmToken ? '***' + fcmToken.slice(-10) : null, topic });
+    
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'fcmToken is required' });
     }
-
-    // Debug: log payload size (not data) and enforce a max size to avoid overloads
-    const approxLen = photoBase64.length;
-    console.log(`[PHOTO] userId=${userId} payloadLen=${approxLen}`);
-    if (approxLen > 8 * 1024 * 1024) {
-      return res.status(413).json({ error: 'Image too large' });
-    }
-
-    // Normalize: strip data URI header if present to store raw base64 only (smaller DB, consistent reads)
-    const normalized = photoBase64.startsWith('data:')
-      ? photoBase64.substring(photoBase64.indexOf(',') + 1)
-      : photoBase64;
-
-    const result = await pool.query(
-      'UPDATE users SET photo = $1 WHERE id = $2 RETURNING id, username, name, role, email, unit, photo',
-      [normalized, userId]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    return res.json({ success: true, user: result.rows[0] });
+    
+    const { subscribeTokenToTopic } = require('../services/firebaseService');
+    const out = await subscribeTokenToTopic(fcmToken, topic);
+    console.log('✅ Successfully subscribed to topic:', out);
+    res.json(out);
   } catch (err) {
-    console.error('Error updating user photo:', err);
-    return res.status(500).json({ error: 'Database error', details: err.message });
+    console.error('❌ Error subscribing to topic:', err);
+    res.status(400).json({ error: err.message });
   }
 });
 
-// GET /api/users/:id/tasks
-router.get('/:id/tasks', async (req, res) => {
-  const userId = req.params.id;
+// POST /api/users/unsubscribe-topic   { fcmToken, topic }
+router.post('/unsubscribe-topic', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT "ID" as id, "ZONE_ID" as zone_id, "ASSIGNED_BY" as assigned_by, "CREATED_BY" as created_by
-       FROM "ZONE_ASSIGNMENT"
-       WHERE "SOULDER_ID" = $1
-       ORDER BY "ID" DESC`,
-      [userId]
-    );
-    res.json({ tasks: result.rows });
+    const { fcmToken, topic = 'alerts' } = req.body || {};
+    console.log('📱 Unsubscribing FCM token from topic:', { fcmToken: fcmToken ? '***' + fcmToken.slice(-10) : null, topic });
+    
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'fcmToken is required' });
+    }
+    
+    const { unsubscribeTokenFromTopic } = require('../services/firebaseService');
+    const out = await unsubscribeTokenFromTopic(fcmToken, topic);
+    console.log('✅ Successfully unsubscribed from topic:', out);
+    res.json(out);
   } catch (err) {
-    console.error('Error fetching tasks for user', userId, err);
-    res.status(500).json({ error: 'Database error', details: err.message });
+    console.error('❌ Error unsubscribing from topic:', err);
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -534,38 +460,130 @@ router.post('/registration-requests/:id/reject', async (req, res) => {
   }
 });
 
-// PUT /api/users/update-tokens
-// Kept for backward compatibility, but will not require DB columns
-router.put('/update-tokens', async (req, res) => {
-  // Accept and ignore without error so mobile can call it safely
+// ===== PARAMETERIZED ROUTES (must come after specific routes) =====
+
+// PUT /api/users/:id - update soldier details (name, email, unit, MobileNumber, role)
+router.put('/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, email, unit, MobileNumber, role } = req.body || {};
+
+  // Normalize placeholder/null-like values to actual nulls to avoid strings like "[null]"
+  const normalizeNullish = (v) => {
+    if (v === undefined || v === null) return null;
+    const s = String(v).trim().toLowerCase();
+    if (s === '' || s === 'null' || s === '[null]' || s === 'undefined' || s === 'na' || s === 'n/a') return null;
+    return v;
+  };
+
   try {
-    res.json({ message: 'Accepted (no DB storage). Consider topic subscription endpoints instead.' });
+    const result = await pool.query(
+      `UPDATE users SET
+        name = COALESCE($1, name),
+        email = COALESCE($2, email),
+        unit = COALESCE($3, unit),
+        "MobileNumber" = COALESCE($4, "MobileNumber"),
+        role = COALESCE($5, role)
+       WHERE id = $6
+       RETURNING id, username, name, role, email, unit, "MobileNumber"`,
+      [
+        normalizeNullish(name),
+        normalizeNullish(email),
+        normalizeNullish(unit),
+        normalizeNullish(MobileNumber),
+        normalizeNullish(role),
+        id,
+      ]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json(result.rows[0]);
   } catch (err) {
-    res.status(200).json({ message: 'Accepted' });
+    console.error('Error updating user:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/users/subscribe-topic   { fcmToken, topic }
-router.post('/subscribe-topic', async (req, res) => {
+// PUT /api/users/:id/location
+router.put('/:id/location', async (req, res) => {
+  const userId = req.params.id;
+  const { latitude, longitude, heading } = req.body;
+  const safeHeading = typeof heading === 'number' && !isNaN(heading) ? heading : 0;
+  console.log('--- BACKEND /users/:id/location ---');
+  console.log(`Received location update for userId: ${userId}`);
+  console.log(`Payload: { latitude: ${latitude}, longitude: ${longitude}, heading: ${safeHeading} }`);
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+    console.error('Validation Error: latitude and longitude must be numbers.');
+    return res.status(400).json({ error: 'latitude and longitude must be numbers' });
+  }
   try {
-    const { fcmToken, topic = 'alerts' } = req.body || {};
-    const { subscribeTokenToTopic } = require('../services/firebaseService');
-    const out = await subscribeTokenToTopic(fcmToken, topic);
-    res.json(out);
+    const result = await pool.query(
+      'UPDATE users SET latitude = $1, longitude = $2, heading = $3 WHERE id = $4 RETURNING *',
+      [latitude, longitude, safeHeading, userId]
+    );
+    if (result.rows.length === 0) {
+      console.error('User not found for id:', userId);
+      return res.status(404).json({ error: 'User not found' });
+    }
+    console.log('Location update successful for userId:', userId);
+    return res.status(200).json({ success: true, user: result.rows[0] });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    console.error('Database error during location update:', err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/users/unsubscribe-topic   { fcmToken, topic }
-router.post('/unsubscribe-topic', async (req, res) => {
+// PUT /api/users/:id/photo
+// Accepts JSON { photoBase64: string } where string can be raw base64 or a data URI (e.g., data:image/jpeg;base64,....)
+router.put('/:id/photo', async (req, res) => {
+  const userId = req.params.id;
+  let { photoBase64 } = req.body || {};
   try {
-    const { fcmToken, topic = 'alerts' } = req.body || {};
-    const { unsubscribeTokenFromTopic } = require('../services/firebaseService');
-    const out = await unsubscribeTokenFromTopic(fcmToken, topic);
-    res.json(out);
+    if (!photoBase64 || typeof photoBase64 !== 'string') {
+      return res.status(400).json({ error: 'photoBase64 is required' });
+    }
+
+    // Debug: log payload size (not data) and enforce a max size to avoid overloads
+    const approxLen = photoBase64.length;
+    console.log(`[PHOTO] userId=${userId} payloadLen=${approxLen}`);
+    if (approxLen > 8 * 1024 * 1024) {
+      return res.status(413).json({ error: 'Image too large' });
+    }
+
+    // Normalize: strip data URI header if present to store raw base64 only (smaller DB, consistent reads)
+    const normalized = photoBase64.startsWith('data:')
+      ? photoBase64.substring(photoBase64.indexOf(',') + 1)
+      : photoBase64;
+
+    const result = await pool.query(
+      'UPDATE users SET photo = $1 WHERE id = $2 RETURNING id, username, name, role, email, unit, photo',
+      [normalized, userId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    return res.json({ success: true, user: result.rows[0] });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    console.error('Error updating user photo:', err);
+    return res.status(500).json({ error: 'Database error', details: err.message });
+  }
+});
+
+// GET /api/users/:id/tasks
+router.get('/:id/tasks', async (req, res) => {
+  const userId = req.params.id;
+  try {
+    const result = await pool.query(
+      `SELECT "ID" as id, "ZONE_ID" as zone_id, "ASSIGNED_BY" as assigned_by, "CREATED_BY" as created_by
+       FROM "ZONE_ASSIGNMENT"
+       WHERE "SOULDER_ID" = $1
+       ORDER BY "ID" DESC`,
+      [userId]
+    );
+    res.json({ tasks: result.rows });
+  } catch (err) {
+    console.error('Error fetching tasks for user', userId, err);
+    res.status(500).json({ error: 'Database error', details: err.message });
   }
 });
 
