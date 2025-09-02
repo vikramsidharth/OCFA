@@ -47,8 +47,8 @@ router.post('/register', async (req, res) => {
     phone_no,
     id_no
   } = req.body;
-  if (!username || !password || !role || !name) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (!username || !password || !role || !name || !id_no) {
+    return res.status(400).json({ error: 'Missing required fields: username, password, role, name, and ID Number are required' });
   }
   try {
     const saltRounds = 10;
@@ -339,8 +339,8 @@ router.post('/registration-requests', async (req, res) => {
     id_no,
     blood_group
   } = req.body;
-  if (!username || !password || !role || !name) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (!username || !password || !role || !name || !id_no) {
+    return res.status(400).json({ error: 'Missing required fields: username, password, role, name, and ID Number are required' });
   }
   try {
     const saltRounds = 10;

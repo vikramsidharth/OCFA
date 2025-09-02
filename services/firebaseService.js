@@ -211,13 +211,13 @@ async function sendBulkFirebaseNotifications(userIds, message, rateLimit = 100) 
   for (let i = 0; i < userIds.length; i += batchSize) {
     const batch = userIds.slice(i, i + batchSize);
     const batchPromises = batch.map(async (userId) => {
-      try {
-        const result = await sendFirebaseNotification(userId, message);
+    try {
+      const result = await sendFirebaseNotification(userId, message);
         return result;
-      } catch (error) {
+    } catch (error) {
         return {
-          userId,
-          success: false,
+        userId,
+        success: false,
           error: error.message,
           timestamp: new Date().toISOString()
         };

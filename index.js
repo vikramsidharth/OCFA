@@ -184,49 +184,49 @@ server.listen(PORT, '0.0.0.0', () => {
       // Create new client for LISTEN
       client = await pool.connect();
       
-      // Ensure trigger and function exist to publish NOTIFY on inserts
-      try {
+    // Ensure trigger and function exist to publish NOTIFY on inserts
+    try {
         await client.query(`
-          CREATE OR REPLACE FUNCTION notify_alerts_insert()
-          RETURNS trigger AS $$
-          BEGIN
-            PERFORM pg_notify('alerts_inserted', row_to_json(NEW)::text);
-            RETURN NULL;
-          END;
-          $$ LANGUAGE plpgsql;
+        CREATE OR REPLACE FUNCTION notify_alerts_insert()
+        RETURNS trigger AS $$
+        BEGIN
+          PERFORM pg_notify('alerts_inserted', row_to_json(NEW)::text);
+          RETURN NULL;
+        END;
+        $$ LANGUAGE plpgsql;
 
-          DO $$
-          BEGIN
-            IF NOT EXISTS (
-              SELECT 1 FROM pg_trigger
-              WHERE tgname = 'alerts_insert_trigger'
-            ) THEN
-              CREATE TRIGGER alerts_insert_trigger
-              AFTER INSERT ON alerts
-              FOR EACH ROW
-              EXECUTE FUNCTION notify_alerts_insert();
-            END IF;
-          END$$;
-        `);
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_trigger
+            WHERE tgname = 'alerts_insert_trigger'
+          ) THEN
+            CREATE TRIGGER alerts_insert_trigger
+            AFTER INSERT ON alerts
+            FOR EACH ROW
+            EXECUTE FUNCTION notify_alerts_insert();
+          END IF;
+        END$$;
+      `);
         console.log('✅ Alerts insert trigger ensured');
-      } catch (e) {
+    } catch (e) {
         console.warn('⚠️ Could not ensure alerts insert trigger:', e.message);
-      }
+    }
 
       // Start listening
-      await client.query('LISTEN alerts_inserted');
+    await client.query('LISTEN alerts_inserted');
       console.log('🎧 Listening on channel alerts_inserted for new alerts');
-      
+
       // Reset reconnect attempts on successful connection
       reconnectAttempts = 0;
 
       // Handle notifications
-      client.on('notification', async (msg) => {
-        if (msg.channel !== 'alerts_inserted') return;
+    client.on('notification', async (msg) => {
+      if (msg.channel !== 'alerts_inserted') return;
         
-        try {
+      try {
           console.log('📨 Received alert notification:', msg.payload);
-          const payload = JSON.parse(msg.payload || '{}');
+        const payload = JSON.parse(msg.payload || '{}');
           
           const { 
             id, 
@@ -240,9 +240,9 @@ server.listen(PORT, '0.0.0.0', () => {
           } = payload;
 
           // Build push notification payload
-          const push = {
+        const push = {
             title: getAlertTitle(category, severity),
-            body: message,
+          body: message,
             data: { 
               type: category, 
               category, 
@@ -259,15 +259,15 @@ server.listen(PORT, '0.0.0.0', () => {
           // Send push based on targeting logic
           let pushResult = null;
           try {
-            if (user_id) {
+        if (user_id) {
               // Send to specific user
               pushResult = await sendFirebaseNotification(user_id, push);
               console.log(`✅ Alert ${id} sent to user ${user_id}`);
-            } else if (unit) {
+        } else if (unit) {
               // Send to all users in the unit
               pushResult = await sendNotificationsByFilter({ unit, hasPushToken: true }, push);
               console.log(`✅ Alert ${id} sent to unit ${unit}`);
-            } else {
+        } else {
               // Broadcast to all commanders and supervisors
               pushResult = await sendNotificationsByFilter({ 
                 role: ['commander', 'supervisor'], 
@@ -280,7 +280,7 @@ server.listen(PORT, '0.0.0.0', () => {
             
             // Fallback: try topic notification
             try {
-              await sendTopicNotification('alerts', push);
+          await sendTopicNotification('alerts', push);
               console.log(`🔄 Alert ${id} sent via topic fallback`);
             } catch (topicError) {
               console.error(`❌ Topic fallback also failed for alert ${id}:`, topicError.message);
@@ -304,7 +304,7 @@ server.listen(PORT, '0.0.0.0', () => {
         scheduleReconnect();
       });
 
-    } catch (err) {
+      } catch (err) {
       console.error('❌ Failed to setup alerts LISTEN:', err.message);
       scheduleReconnect();
     }
