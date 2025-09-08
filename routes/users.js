@@ -346,34 +346,34 @@ router.post('/registration-requests', async (req, res) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
     const result = await pool.query(
-      `INSERT INTO users (
-        username, password, name, role, email, unit, category, age, gender, height, weight, bp, "MobileNumber", "EmployeeID", blood_group
+      `INSERT INTO registration_requests (
+        username, password, name, role, email, category, age, gender, height, weight, bp, id_no, blood_group, unit_name, phone_no, status
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
-      ) RETURNING id, username, name, role, email, unit, category, age, gender, height, weight, bp, "MobileNumber", "EmployeeID", blood_group`,
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'pending'
+      ) RETURNING id, username, name, role, email, unit_name, category, age, gender, height, weight, bp, id_no, blood_group, phone_no, status, created_at`,
       [
         username,
         hashedPassword,
         name,
         role,
         email,
-        unit_name,
         category,
-        age,
-        gender,
-        height,
-        weight,
-        bp,
-        phone_no,
+        age ?? null,
+        gender ?? null,
+        height ?? null,
+        weight ?? null,
+        bp ?? null,
         id_no,
-        blood_group
+        blood_group ?? null,
+        unit_name ?? null,
+        phone_no ?? null
       ]
     );
-    res.status(201).json(result.rows[0]);
+    res.status(201).json({ message: 'Registration request submitted', request: result.rows[0] });
   } catch (err) {
     console.error('[REGISTER] Backend error:', err);
     if (err.code === '23505') {
-      res.status(409).json({ error: 'Username already exists' });
+      res.status(409).json({ error: 'Duplicate pending registration for username/email/id_no' });
     } else {
       res.status(500).json({ error: err.message || 'Server error during registration' });
     }
@@ -509,7 +509,7 @@ router.put('/:id/location', async (req, res) => {
   const userId = req.params.id;
   const { latitude, longitude, heading } = req.body;
   const safeHeading = typeof heading === 'number' && !isNaN(heading) ? heading : 0;
-  console.log('--- BACKEND /users/:id/location ---');
+  console.log('--- BACKEND /users/:id/location (users+locations v4, triggers disabled) ---');
   console.log(`Received location update for userId: ${userId}`);
   console.log(`Payload: { latitude: ${latitude}, longitude: ${longitude}, heading: ${safeHeading} }`);
   if (typeof latitude !== 'number' || typeof longitude !== 'number') {
@@ -517,16 +517,42 @@ router.put('/:id/location', async (req, res) => {
     return res.status(400).json({ error: 'latitude and longitude must be numbers' });
   }
   try {
-    const result = await pool.query(
-      'UPDATE users SET latitude = $1, longitude = $2, heading = $3 WHERE id = $4 RETURNING *',
-      [latitude, longitude, safeHeading, userId]
-    );
-    if (result.rows.length === 0) {
-      console.error('User not found for id:', userId);
-      return res.status(404).json({ error: 'User not found' });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Disable triggers for this transaction so nothing writes to locations
+      await client.query("SET LOCAL session_replication_role = 'replica'");
+
+      const result = await client.query(
+        'UPDATE users SET latitude = $1, longitude = $2, heading = $3 WHERE id = $4 RETURNING *',
+        [latitude, longitude, safeHeading, userId]
+      );
+
+      if (result.rows.length === 0) {
+        await client.query('ROLLBACK');
+        console.error('User not found for id:', userId);
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Insert into public.locations with your schema (lat/lng columns + username/role)
+      const updatedUser = result.rows[0];
+      const userUsername = updatedUser.username || null;
+      const userRole = updatedUser.role || null;
+      await client.query(
+        'INSERT INTO locations (user_id, lat, lng, heading, username, role) VALUES ($1, $2, $3, $4, $5, $6)',
+        [userId, latitude, longitude, safeHeading, userUsername, userRole]
+      );
+      const inserted = true;
+
+      await client.query('COMMIT');
+      console.log('Location update successful for userId:', userId);
+      return res.status(200).json({ success: true, user: result.rows[0], historyInserted: inserted });
+    } catch (innerErr) {
+      await client.query('ROLLBACK');
+      throw innerErr;
+    } finally {
+      client.release();
     }
-    console.log('Location update successful for userId:', userId);
-    return res.status(200).json({ success: true, user: result.rows[0] });
   } catch (err) {
     console.error('Database error during location update:', err);
     return res.status(500).json({ error: err.message });

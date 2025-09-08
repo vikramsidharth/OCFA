@@ -12,6 +12,7 @@ const usersRouter = require('./routes/users');
 const zonesRouter = require('./routes/zones');
 const alertsRouter = require('./routes/alerts');
 const assignmentsRouter = require('./routes/assignments');
+const healthRouter = require('./routes/health');
 
 const app = express();
 const server = http.createServer(app);
@@ -69,6 +70,7 @@ app.use('/api/users', usersRouter);
 app.use('/api/zones', zonesRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/assignments', assignmentsRouter);
+app.use('/api/health', healthRouter);
 // Alias without /api in case of reverse proxy path rewrites
 app.use('/assignments', assignmentsRouter);
 
