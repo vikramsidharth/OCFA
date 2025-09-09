@@ -562,7 +562,12 @@ router.put('/:id/location', async (req, res) => {
         await client.query("SET LOCAL session_replication_role = 'replica'");
       } catch (triggerError) {
         console.log('Could not disable triggers (permission denied on hosted DB):', triggerError.message);
-        // Continue without disabling triggers - this is acceptable for hosted environments
+        // The failed SET puts the transaction into an aborted state on hosted DBs.
+        // Roll back and start a fresh transaction so subsequent queries succeed.
+        try {
+          await client.query('ROLLBACK');
+        } catch {}
+        await client.query('BEGIN');
       }
 
       const result = await client.query(
