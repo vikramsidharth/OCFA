@@ -39,6 +39,9 @@ app.use((req, res, next) => {
   if (req.method === 'POST' && req.url === '/api/users/register') {
     console.log('DEBUG: Received POST /api/users/register', req.body);
   }
+  if (req.method === 'POST' && req.url === '/api/users/registration-requests') {
+    console.log('DEBUG: Received POST /api/users/registration-requests', req.body);
+  }
   console.log('Incoming request:', req.method, req.url, req.body);
   next();
 });

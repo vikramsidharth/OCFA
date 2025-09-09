@@ -347,9 +347,9 @@ router.post('/registration-requests', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, saltRounds);
     const result = await pool.query(
       `INSERT INTO registration_requests (
-        username, password, name, role, email, category, age, gender, height, weight, bp, id_no, blood_group, unit_name, phone_no, status
+        username, password, name, role, email, category, age, status, gender, height, weight, bp, id_no, blood_group, unit_name, phone, phone_no
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'pending'
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
       ) RETURNING id, username, name, role, email, unit_name, category, age, gender, height, weight, bp, id_no, blood_group, phone_no, status, created_at`,
       [
         username,
@@ -359,6 +359,7 @@ router.post('/registration-requests', async (req, res) => {
         email,
         category,
         age ?? null,
+        'pending',
         gender ?? null,
         height ?? null,
         weight ?? null,
@@ -366,6 +367,7 @@ router.post('/registration-requests', async (req, res) => {
         id_no,
         blood_group ?? null,
         unit_name ?? null,
+        phone_no ?? null,
         phone_no ?? null
       ]
     );

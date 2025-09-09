@@ -26,7 +26,7 @@ export const apiService = {
 
   // User registration
   register: async (userData) => {
-    const response = await fetch(`${API_BASE_URL}/registration-requests`, {
+    const response = await fetch(`${API_BASE_URL}/users/registration-requests`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(userData),
