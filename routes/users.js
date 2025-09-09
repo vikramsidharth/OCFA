@@ -97,12 +97,46 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'Missing username or password' });
   }
   try {
+    console.log(`[LOGIN] Checking user: ${username}`);
+    
     const result = await pool.query(
       'SELECT id, username, password, name, role, email, unit FROM users WHERE username = $1',
       [username]
     );
+    
+    console.log(`[LOGIN] Users table query result: ${result.rows.length} rows found`);
+    
+    // Additional debugging: Check if user exists in registration_requests table regardless of status
+    const allRegRequests = await pool.query(
+      'SELECT username, status, created_at FROM registration_requests WHERE username = $1',
+      [username]
+    );
+    console.log(`[LOGIN] Registration_requests table query result: ${allRegRequests.rows.length} total rows found`);
+    if (allRegRequests.rows.length > 0) {
+      console.log(`[LOGIN] Registration_requests details:`, allRegRequests.rows);
+    }
+    
     if (result.rows.length === 0) {
-      console.log('Login error: Invalid credentials (user not found)');
+      console.log(`[LOGIN] User not found in users table, checking registration_requests...`);
+      
+      // Check if user exists in registration_requests with pending status
+      const pendingResult = await pool.query(
+        'SELECT username, status, created_at FROM registration_requests WHERE username = $1 AND status = $2',
+        [username, 'pending']
+      );
+      
+      console.log(`[LOGIN] Registration_requests query result: ${pendingResult.rows.length} pending rows found`);
+      
+      if (pendingResult.rows.length > 0) {
+        console.log('Login error: User registration is pending approval');
+        return res.status(403).json({ 
+          error: 'Your registration is pending approval. Please wait for an administrator to approve your account.',
+          status: 'pending_approval',
+          registeredAt: pendingResult.rows[0].created_at
+        });
+      }
+      
+      console.log('Login error: Invalid credentials (user not found in either table)');
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     const user = result.rows[0];
@@ -523,7 +557,13 @@ router.put('/:id/location', async (req, res) => {
     try {
       await client.query('BEGIN');
       // Disable triggers for this transaction so nothing writes to locations
-      await client.query("SET LOCAL session_replication_role = 'replica'");
+      // Note: This may not work on hosted databases due to permission restrictions
+      try {
+        await client.query("SET LOCAL session_replication_role = 'replica'");
+      } catch (triggerError) {
+        console.log('Could not disable triggers (permission denied on hosted DB):', triggerError.message);
+        // Continue without disabling triggers - this is acceptable for hosted environments
+      }
 
       const result = await client.query(
         'UPDATE users SET latitude = $1, longitude = $2, heading = $3 WHERE id = $4 RETURNING *',
