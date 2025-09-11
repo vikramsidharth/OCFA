@@ -10,9 +10,11 @@ const notificationsRouter = require('./routes/notifications');
 const reportsRouter = require('./routes/reports');
 const usersRouter = require('./routes/users');
 const zonesRouter = require('./routes/zones');
+const unitsRouter = require('./routes/units');
 const alertsRouter = require('./routes/alerts');
 const assignmentsRouter = require('./routes/assignments');
 const healthRouter = require('./routes/health');
+const locationsRouter = require('./routes/locations');
 
 const app = express();
 const server = http.createServer(app);
@@ -71,9 +73,11 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/reports', reportsRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/zones', zonesRouter);
+app.use('/api/units', unitsRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/assignments', assignmentsRouter);
 app.use('/api/health', healthRouter);
+app.use('/api/locations', locationsRouter);
 // Alias without /api in case of reverse proxy path rewrites
 app.use('/assignments', assignmentsRouter);
 
