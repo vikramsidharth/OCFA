@@ -197,6 +197,46 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// POST /api/users/:id/change-password
+router.post('/:id/change-password', async (req, res) => {
+  const { id } = req.params;
+  const { currentPassword, newPassword } = req.body || {};
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+  }
+
+  try {
+    // Fetch user with password
+    const result = await pool.query(
+      'SELECT id, username, password FROM users WHERE id = $1',
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const user = result.rows[0];
+
+    // Check current password (support bcrypt or legacy plain match like login)
+    const bcryptMatch = await bcrypt.compare(currentPassword, user.password);
+    const directMatch = currentPassword === user.password;
+    const passwordMatch = bcryptMatch || directMatch;
+    if (!passwordMatch) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash and update to bcrypt for all future logins
+    const saltRounds = 10;
+    const hashed = await bcrypt.hash(newPassword, saltRounds);
+    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashed, id]);
+
+    return res.json({ success: true, message: 'Password updated successfully' });
+  } catch (err) {
+    console.error('Error changing password:', err);
+    return res.status(500).json({ error: 'Server error updating password' });
+  }
+});
+
 // GET /api/users/soldier-overview?commander_id=ID
 router.get('/soldier-overview', async (req, res) => {
   const { commander_id } = req.query;
@@ -618,9 +658,17 @@ router.put('/:id/photo', async (req, res) => {
 
     // Debug: log payload size (not data) and enforce a max size to avoid overloads
     const approxLen = photoBase64.length;
-    console.log(`[PHOTO] userId=${userId} payloadLen=${approxLen}`);
-    if (approxLen > 8 * 1024 * 1024) {
-      return res.status(413).json({ error: 'Image too large' });
+    const estimatedSizeMB = Math.round((approxLen * 3) / 4 / 1024 / 1024 * 100) / 100; // Convert base64 to approximate bytes
+    console.log(`[PHOTO] userId=${userId} payloadLen=${approxLen} estimatedSize=${estimatedSizeMB}MB`);
+    
+    // Increased limit to 10MB to accommodate higher quality images
+    if (approxLen > 10 * 1024 * 1024) {
+      return res.status(413).json({ 
+        error: 'Image too large', 
+        details: `Image size (${estimatedSizeMB}MB) exceeds maximum allowed size (10MB). Please compress the image and try again.`,
+        maxSize: '10MB',
+        currentSize: `${estimatedSizeMB}MB`
+      });
     }
 
     // Normalize: strip data URI header if present to store raw base64 only (smaller DB, consistent reads)
